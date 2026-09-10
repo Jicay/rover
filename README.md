@@ -49,31 +49,78 @@ domain/
 ├── exception/  # Erreurs métier, traduites en codes HTTP par l'infrastructure
 ├── port/       # BoardPort — persistance de l'agrégat
 └── usecase/    # CreateBoard, DeployRover, ExecuteCommands, GetBoard
+
+application/    # UseCasesConfiguration — câblage des use cases en beans Spring
+infrastructure/
+└── driving/
+    ├── controller/  # BoardController — routes REST
+    └── dto/         # DTO d'entrée/sortie, isolés du modèle de domaine
 ```
 
 Le domaine ne contient que du Kotlin natif : aucun framework, aucune bibliothèque externe.
+Les use cases sont des classes ordinaires ; c'est la couche `application` qui les expose
+en beans, et la couche `driving` qui traduit HTTP ↔ domaine.
+
+## API REST
+
+| Route | Corps de requête | Succès |
+|-------|------------------|--------|
+| `POST /boards` | `{"width":5,"height":4,"obstacles":[{"x":1,"y":1}]}` | `201` |
+| `POST /boards/{boardId}/rovers` | `{"id":"rover-1","x":2,"y":3,"direction":"E"}` | `201` |
+| `POST /boards/{boardId}/rovers/{roverId}/commands` | `{"commands":"FFRFF"}` | `200` |
+| `GET /boards/{boardId}` | — | `200` |
+
+Les quatre routes renvoient le même corps : l'état du plateau
+(`id`, `width`, `height`, `obstacles`, `rovers`). L'identifiant du plateau est un UUID généré
+par la couche driving : le domaine ne génère rien, il reste déterministe et testable.
+
+Les erreurs métier sont traduites par un `try/catch` explicite dans le controller — pas de
+`@RestControllerAdvice` — afin de garder un couplage minimal à Spring :
+
+| Exception du domaine | Code |
+|----------------------|------|
+| `InvalidBoardDimensionsException`, `InvalidCommandException`, `PositionOutOfBoardException` | `400` |
+| `PositionAlreadyOccupiedException`, `DuplicateRoverIdException` | `409` |
+| `BoardNotFoundException`, `RoverNotFoundException` | `404` |
+
+Un corps de requête malformé (JSON invalide, champ obligatoire absent, direction inconnue)
+donne `400` via le traitement par défaut de Spring MVC.
 
 ## Stack technique
 
-- **Kotlin** 2.3.20 + **Spring Boot** 4.0.6
+- **Kotlin** 2.3.20 + **Spring Boot** 4.0.6 (Spring MVC, Jackson 3)
 - **Java** 25
-- **Kotest** 6 (tests unitaires, tests property-based)
-- **MockK** pour les mocks
+- **Kotest** 6 (tests unitaires, tests property-based, tests d'intégration via
+  `kotest-extensions-spring`)
+- **MockK** pour les mocks, **SpringMockK** (`@MockkBean`) pour les beans mockés
 - **JaCoCo** pour la couverture de code
-- **PITest** (mutateurs `STRONGER`) pour les tests de mutation
+- **PITest** (mutateurs `STRONGER`) pour les tests de mutation du domaine
 
 ## Lancer les tests
+
+Les tests unitaires (`src/test`) couvrent le domaine ; les tests d'intégration
+(`src/testIntegration`) valident la couche web avec `@WebMvcTest` + MockMvc, use cases mockés.
 
 ```bash
 # Tests unitaires
 ./gradlew test
 
-# Rapport de couverture JaCoCo (build/reports/jacoco/test/html/)
-./gradlew jacocoTestReport
+# Tests d'intégration de la couche driving
+./gradlew testIntegration
+
+# Les deux, via check
+./gradlew build
+
+# Rapport de couverture agrégé (build/reports/jacoco/jacocoFullReport/)
+./gradlew jacocoFullReport
 
 # Tests de mutation PITest (build/reports/pitest/)
 ./gradlew pitest
 ```
+
+> `kotest-extensions-spring` est publié sous `io.kotest` et suit le versioning de Kotest depuis
+> la 6 (`io.kotest:kotest-extensions-spring:6.1.11`). L'ancien artefact
+> `io.kotest.extensions:kotest-extensions-spring` s'arrête à 1.3.0 et casse sur Kotest 6.
 
 > Les mutants qui survivent portent sur du bytecode généré par Kotlin (`copy`, lambdas inline) :
 > ce sont des mutants équivalents, que le plugin Arcmutate Kotlin saurait écarter. 100 % de
@@ -83,7 +130,8 @@ Le domaine ne contient que du Kotlin natif : aucun framework, aucune bibliothèq
 
 Le pipeline GitHub Actions s'exécute sur chaque push/PR vers `main` ou `master` :
 
-1. Build sans tests
+1. Compilation et packaging (`assemble`)
 2. Tests unitaires + publication des résultats
-3. Rapport JaCoCo (artefact uploadé)
-4. Tests de mutation PITest (artefact uploadé)
+3. Tests d'intégration + publication des résultats
+4. Rapport JaCoCo agrégé (unitaires + intégration)
+5. Tests de mutation PITest (artefact uploadé)

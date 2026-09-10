@@ -24,6 +24,8 @@ repositories {
 
 // Kotest 6 and Cucumber 7.34.3 require JUnit Platform 1.14.x / Jupiter 5.14.x.
 // Spring Boot BOM may pull junit-platform-launcher at a lower version; align all platform jars.
+// Le BOM Spring Boot 4 pousse JUnit Jupiter 6 : on le ramene sur 5.14.2 partout, sinon
+// le moteur Kotest (JUnit Platform 1.x) et Jupiter 6 se retrouvent dans le meme classpath.
 extra["junit-jupiter.version"] = "5.14.2"
 configurations.all {
     resolutionStrategy.eachDependency {
@@ -33,14 +35,52 @@ configurations.all {
     }
 }
 
+val kotestVersion = "6.1.11"
+
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter")
+    implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("org.jetbrains.kotlin:kotlin-reflect")
+    // Jackson 3 (Spring Boot 4) : module Kotlin necessaire pour (de)serialiser les data classes.
+    implementation("tools.jackson.module:jackson-module-kotlin")
 
     testImplementation("io.mockk:mockk:1.14.9")
-    testImplementation("io.kotest:kotest-assertions-core:6.1.11")
-    testImplementation("io.kotest:kotest-property:6.1.11")
-    testImplementation("io.kotest:kotest-runner-junit5:6.1.11")
+    testImplementation("io.kotest:kotest-assertions-core:$kotestVersion")
+    testImplementation("io.kotest:kotest-property:$kotestVersion")
+    testImplementation("io.kotest:kotest-runner-junit5:$kotestVersion")
+}
+
+// Les tests d'integration vivent dans leur propre source set (src/testIntegration/kotlin).
+testing {
+    suites {
+        register<JvmTestSuite>("testIntegration") {
+            useJUnitJupiter("5.14.2")
+            dependencies {
+                // Donne acces aux classes de src/main (le extendsFrom ci-dessous donne ses dependances).
+                implementation(project())
+                // Spring Boot 4 : la tranche @WebMvcTest vit dans son propre starter,
+                // qui embarque spring-boot-starter-test. Mockito est exclu, on mocke avec MockK.
+                implementation("org.springframework.boot:spring-boot-starter-webmvc-test") {
+                    exclude(group = "org.mockito", module = "mockito-core")
+                }
+                implementation("io.kotest:kotest-runner-junit5:$kotestVersion")
+                implementation("io.kotest:kotest-assertions-core:$kotestVersion")
+                // Publiee sous io.kotest et versionnee comme Kotest depuis la 6
+                // (l'ancienne io.kotest.extensions:kotest-extensions-spring s'arrete a 1.3.0).
+                implementation("io.kotest:kotest-extensions-spring:$kotestVersion")
+                implementation("com.ninja-squad:springmockk:5.0.1")
+            }
+        }
+    }
+}
+
+// Sans ca, `./gradlew build` ne compilerait meme pas src/testIntegration.
+tasks.check {
+    dependsOn(testing.suites.named("testIntegration"))
+}
+
+configurations.named("testIntegrationImplementation") {
+    extendsFrom(configurations.implementation.get())
 }
 
 kotlin {
@@ -66,6 +106,23 @@ tasks.jacocoTestReport {
     }
 }
 
+// Couverture agregee : tests unitaires + tests d'integration.
+tasks.register<JacocoReport>("jacocoFullReport") {
+    group = "verification"
+    description = "Rapport JaCoCo agregeant les tests unitaires et les tests d'integration"
+    dependsOn(tasks.test, tasks.named("testIntegration"))
+    executionData(
+        fileTree(layout.buildDirectory.dir("jacoco")) {
+            include("test.exec", "testIntegration.exec")
+        }
+    )
+    sourceSets(sourceSets.main.get())
+    reports {
+        xml.required = true
+        html.required = true
+    }
+}
+
 pitest {
     targetClasses.add("com.jicay.rover.*")
     junit5PluginVersion = "1.2.1"
@@ -75,7 +132,13 @@ pitest {
     testSourceSets.addAll(sourceSets["test"])
     mainSourceSets.addAll(sourceSets["main"])
     outputFormats.addAll("XML", "HTML")
-    excludedClasses.add("**RoverApplication")
+    // Les mutations ne visent que le domaine : la couche driving est couverte par les
+    // tests d'integration, qui ne tournent pas sous PITest.
+    excludedClasses.addAll(
+        "**RoverApplication",
+        "com.jicay.rover.application.*",
+        "com.jicay.rover.infrastructure.*",
+    )
 }
 
 /*val pitestClasspath: Configuration by configurations.creating

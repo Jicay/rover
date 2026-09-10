@@ -22,8 +22,10 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      # `check` embarque desormais testIntegration : on compile/package seulement ici,
+      # les deux campagnes de tests ont leur propre etape ci-dessous.
       - name: Build
-        run: ./gradlew build -x test
+        run: ./gradlew assemble
 
       - name: Run tests
         run: ./gradlew test
@@ -36,14 +38,25 @@ jobs:
           files: |
             build/test-results/test/*.xml
 
-      - name: Generate JaCoCo report
-        run: ./gradlew jacocoTestReport
+      - name: Run integration tests
+        run: ./gradlew testIntegration
+
+      - name: Publish Integration Test
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          check_name: Integration tests results
+          files: |
+            build/test-results/testIntegration/*.xml
+
+      - name: Generate aggregated JaCoCo report
+        run: ./gradlew jacocoFullReport
 
       - name: JaCoCo Code Coverage Report
         id: jacoco_reporter
         uses: PavanMudigonda/jacoco-reporter@v4.8
         with:
-          coverage_results_path: build/reports/jacoco/test/jacocoTestReport.xml
+          coverage_results_path: build/reports/jacoco/jacocoFullReport/jacocoFullReport.xml
           coverage_report_name: Coverage
           coverage_report_title: JaCoCo
           github_token: ${{ secrets.GITHUB_TOKEN }}

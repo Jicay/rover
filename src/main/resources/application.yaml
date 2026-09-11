@@ -1,3 +1,9 @@
 spring:
   application:
     name: rover
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/rover}
+    username: ${DATABASE_USERNAME:rover}
+    password: ${DATABASE_PASSWORD:rover}
+  liquibase:
+    change-log: classpath:db/changelog.xml

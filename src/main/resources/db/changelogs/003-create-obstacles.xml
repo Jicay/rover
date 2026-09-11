@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-5.0.xsd">
+
+    <changeSet id="003-create-obstacles" author="jicay">
+        <createTable tableName="obstacles">
+            <column name="id" type="BIGINT" autoIncrement="true">
+                <constraints primaryKey="true" primaryKeyName="pk_obstacles" nullable="false"/>
+            </column>
+            <column name="board_id" type="VARCHAR(64)">
+                <constraints nullable="false"/>
+            </column>
+            <column name="x" type="INT">
+                <constraints nullable="false"/>
+            </column>
+            <column name="y" type="INT">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+
+        <addForeignKeyConstraint
+            baseTableName="obstacles"
+            baseColumnNames="board_id"
+            constraintName="fk_obstacles_board"
+            referencedTableName="boards"
+            referencedColumnNames="id"
+            onDelete="CASCADE"/>
+
+        <!-- Board.obstacles est un Set : deux obstacles ne peuvent pas occuper la meme case.
+             La contrainte d'unicite fait respecter cet invariant cote base. -->
+        <addUniqueConstraint
+            tableName="obstacles"
+            columnNames="board_id, x, y"
+            constraintName="uq_obstacles_board_position"/>
+    </changeSet>
+
+</databaseChangeLog>

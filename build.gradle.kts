@@ -44,6 +44,14 @@ dependencies {
     // Jackson 3 (Spring Boot 4) : module Kotlin necessaire pour (de)serialiser les data classes.
     implementation("tools.jackson.module:jackson-module-kotlin")
 
+    // Persistance : JdbcTemplate + HikariCP, migrations Liquibase, driver Postgres.
+    implementation("org.springframework.boot:spring-boot-starter-jdbc")
+    // Spring Boot 4 a eclate les auto-configurations en modules : liquibase-core seul
+    // n'apporte plus LiquibaseAutoConfiguration, il faut le starter (qui l'embarque).
+    implementation("org.springframework.boot:spring-boot-starter-liquibase")
+    implementation("org.liquibase:liquibase-core")
+    runtimeOnly("org.postgresql:postgresql")
+
     testImplementation("io.mockk:mockk:1.14.9")
     testImplementation("io.kotest:kotest-assertions-core:$kotestVersion")
     testImplementation("io.kotest:kotest-property:$kotestVersion")
@@ -69,6 +77,14 @@ testing {
                 // (l'ancienne io.kotest.extensions:kotest-extensions-spring s'arrete a 1.3.0).
                 implementation("io.kotest:kotest-extensions-spring:$kotestVersion")
                 implementation("com.ninja-squad:springmockk:5.0.1")
+                // Testcontainers 2.x : les modules ont ete renommes (org.testcontainers:postgresql
+                // -> org.testcontainers:testcontainers-postgresql). La version vient du BOM
+                // Spring Boot 4 (2.0.5), inutile de la figer ici.
+                implementation("org.testcontainers:testcontainers-postgresql")
+                // Meme deplacement que kotest-extensions-spring : publiee sous io.kotest et
+                // versionnee comme Kotest depuis la 6. L'ancienne coordonnee
+                // io.kotest.extensions:kotest-extensions-testcontainers s'arrete a 2.0.2.
+                implementation("io.kotest:kotest-extensions-testcontainers:$kotestVersion")
             }
         }
     }

@@ -52,9 +52,11 @@ domain/
 
 application/    # UseCasesConfiguration — câblage des use cases en beans Spring
 infrastructure/
-└── driving/
-    ├── controller/  # BoardController — routes REST
-    └── dto/         # DTO d'entrée/sortie, isolés du modèle de domaine
+├── driving/
+│   ├── controller/  # BoardController — routes REST
+│   └── dto/         # DTO d'entrée/sortie, isolés du modèle de domaine
+└── driven/
+    └── postgres/    # BoardDAO — implémentation Postgres de BoardPort (SQL écrit à la main)
 ```
 
 Le domaine ne contient que du Kotlin natif : aucun framework, aucune bibliothèque externe.
@@ -86,26 +88,77 @@ Les erreurs métier sont traduites par un `try/catch` explicite dans le controll
 Un corps de requête malformé (JSON invalide, champ obligatoire absent, direction inconnue)
 donne `400` via le traitement par défaut de Spring MVC.
 
+## Persistance
+
+`BoardPort` est implémenté par un unique adapter, `BoardDAO`, qui lit et écrit **l'agrégat
+entier** : `Board` est la seule frontière transactionnelle du domaine, il n'y a donc pas de
+port par table. Le SQL est écrit à la main avec `NamedParameterJdbcTemplate` — pas de JPA,
+pas d'ORM : le mapping relationnel ↔ agrégat reste visible et testable.
+
+Le schéma est géré par Liquibase (`db/changelog.xml` + un changelog par table) :
+
+| Table | Colonnes | Contraintes |
+|-------|----------|-------------|
+| `boards` | `id`, `width`, `height` | PK `id` |
+| `rovers` | `board_id`, `rover_id`, `x`, `y`, `direction`, `created_at` | **PK composite `(board_id, rover_id)`**, FK vers `boards` |
+| `obstacles` | `id`, `board_id`, `x`, `y` | **unicité `(board_id, x, y)`**, FK vers `boards` |
+
+Les deux contraintes en gras ne sont pas décoratives : elles font respecter **en base** les
+invariants que l'agrégat garantit en mémoire. L'identifiant d'un rover est fourni par le
+client et n'est unique qu'au sein d'un plateau → clé primaire composite ; `Board.obstacles`
+est un `Set` de positions → contrainte d'unicité. Si le DAO régresse, la base refuse l'écriture
+au lieu de laisser passer une donnée incohérente.
+
+`save` est **idempotent** : la ligne `boards` est upsertée (`ON CONFLICT DO UPDATE`), les
+rovers et obstacles du plateau sont supprimés puis réinsérés, le tout dans une seule
+transaction. Sauvegarder deux fois le même plateau laisse exactement les mêmes lignes.
+
+`created_at` (valeur par défaut `clock_timestamp()`, qui avance à chaque instruction même
+dans une seule transaction) sert à relire les rovers dans leur ordre de déploiement :
+`Board.rovers` est une `List`, l'aller-retour doit restituer le même ordre.
+
 ## Stack technique
 
 - **Kotlin** 2.3.20 + **Spring Boot** 4.0.6 (Spring MVC, Jackson 3)
 - **Java** 25
+- **PostgreSQL** + **Liquibase** pour le schéma, `NamedParameterJdbcTemplate` pour le SQL
 - **Kotest** 6 (tests unitaires, tests property-based, tests d'intégration via
   `kotest-extensions-spring`)
+- **Testcontainers** 2 pour les tests d'intégration de la couche driven
 - **MockK** pour les mocks, **SpringMockK** (`@MockkBean`) pour les beans mockés
 - **JaCoCo** pour la couverture de code
 - **PITest** (mutateurs `STRONGER`) pour les tests de mutation du domaine
 
+## Lancer l'application
+
+```bash
+docker run -d --name rover-pg -p 5432:5432 \
+  -e POSTGRES_DB=rover -e POSTGRES_USER=rover -e POSTGRES_PASSWORD=rover postgres:18-alpine
+
+./gradlew bootRun
+```
+
+Liquibase crée les trois tables au démarrage. L'URL, l'utilisateur et le mot de passe sont
+surchargeables par `DATABASE_URL`, `DATABASE_USERNAME` et `DATABASE_PASSWORD`.
+
 ## Lancer les tests
 
-Les tests unitaires (`src/test`) couvrent le domaine ; les tests d'intégration
-(`src/testIntegration`) valident la couche web avec `@WebMvcTest` + MockMvc, use cases mockés.
+Les tests unitaires (`src/test`) couvrent le domaine. Les tests d'intégration
+(`src/testIntegration`) valident les deux bords de l'hexagone :
+
+- **driving** — `@WebMvcTest` + MockMvc, use cases mockés (routage, JSON, codes HTTP) ;
+- **driven** — `@SpringBootTest` sur un **vrai Postgres** lancé par Testcontainers
+  (schéma Liquibase, SQL, reconstruction de l'agrégat). Docker doit tourner.
+
+Chaque test de la couche driven suit les trois temps : préparation de la base, appel de la
+méthode, vérification du résultat **et** du contenu des tables après l'appel — ce dernier
+point étant le seul moyen de prouver que `save` ne duplique rien.
 
 ```bash
 # Tests unitaires
 ./gradlew test
 
-# Tests d'intégration de la couche driving
+# Tests d'intégration (driving + driven, nécessite Docker)
 ./gradlew testIntegration
 
 # Les deux, via check
@@ -121,6 +174,16 @@ Les tests unitaires (`src/test`) couvrent le domaine ; les tests d'intégration
 > `kotest-extensions-spring` est publié sous `io.kotest` et suit le versioning de Kotest depuis
 > la 6 (`io.kotest:kotest-extensions-spring:6.1.11`). L'ancien artefact
 > `io.kotest.extensions:kotest-extensions-spring` s'arrête à 1.3.0 et casse sur Kotest 6.
+
+> Testcontainers 2 a renommé ses modules : `org.testcontainers:postgresql` est devenu
+> `org.testcontainers:testcontainers-postgresql`, et `PostgreSQLContainer` a déménagé dans
+> le package `org.testcontainers.postgresql`. La version vient du BOM Spring Boot 4 (2.0.5).
+
+> Le conteneur est monté par `install(TestContainerProjectExtension(postgres))` dans le bloc
+> `init` du spec : il démarre à l'instanciation de la classe, donc **avant** que
+> `SpringExtension` ne construise le contexte. L'ancienne `ContainerExtension` (dépréciée en
+> 6.1, supprimée en 6.2) démarrait le conteneur dans `beforeSpec`, ce qui est trop tard pour
+> un `@SpringBootTest` : la DataSource et Liquibase se connectent avant.
 
 > Les mutants qui survivent portent sur du bytecode généré par Kotlin (`copy`, lambdas inline) :
 > ce sont des mutants équivalents, que le plugin Arcmutate Kotlin saurait écarter. 100 % de

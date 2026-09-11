@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+    xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-5.0.xsd">
+
+    <!-- Changelog racine : il ne contient que des inclusions, un fichier par table.
+         Une migration deja jouee n'est jamais modifiee, on en ajoute une nouvelle. -->
+    <include file="db/changelogs/001-create-boards.xml"/>
+    <include file="db/changelogs/002-create-rovers.xml"/>
+    <include file="db/changelogs/003-create-obstacles.xml"/>
+
+</databaseChangeLog>

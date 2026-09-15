@@ -22,8 +22,6 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # `check` embarque desormais testIntegration : on compile/package seulement ici,
-      # les deux campagnes de tests ont leur propre etape ci-dessous.
       - name: Build
         run: ./gradlew assemble
 
@@ -48,6 +46,26 @@ jobs:
           check_name: Integration tests results
           files: |
             build/test-results/testIntegration/*.xml
+
+      - name: Run component tests
+        run: ./gradlew testComponent
+
+      - name: Publish Component Test
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        if: always()
+        with:
+          check_name: Component tests results
+          files: |
+            build/test-results/testComponent/*.xml
+
+      - name: Upload Cucumber report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cucumber-report
+          path: |
+            build/reports/cucumber.html
+            build/reports/cucumber.json
 
       - name: Generate aggregated JaCoCo report
         run: ./gradlew jacocoFullReport

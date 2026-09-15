@@ -124,7 +124,9 @@ dans une seule transaction) sert à relire les rovers dans leur ordre de déploi
 - **PostgreSQL** + **Liquibase** pour le schéma, `NamedParameterJdbcTemplate` pour le SQL
 - **Kotest** 6 (tests unitaires, tests property-based, tests d'intégration via
   `kotest-extensions-spring`)
-- **Testcontainers** 2 pour les tests d'intégration de la couche driven
+- **Testcontainers** 2 pour les tests d'intégration de la couche driven et les tests de composants
+- **Cucumber** 7 (`cucumber-junit-platform-engine` + `cucumber-spring`) et **RestAssured** 6
+  pour les tests de composants
 - **MockK** pour les mocks, **SpringMockK** (`@MockkBean`) pour les beans mockés
 - **JaCoCo** pour la couverture de code
 - **PITest** (mutateurs `STRONGER`) pour les tests de mutation du domaine
@@ -154,6 +156,10 @@ Chaque test de la couche driven suit les trois temps : préparation de la base, 
 méthode, vérification du résultat **et** du contenu des tables après l'appel — ce dernier
 point étant le seul moyen de prouver que `save` ne duplique rien.
 
+Les tests de composants (`src/testComponent`) valident l'application **entière** : elle est
+démarrée pour de vrai sur un port aléatoire, contre un vrai Postgres, et pilotée uniquement
+par son API REST. **Aucun mock.** Voir la section suivante.
+
 ```bash
 # Tests unitaires
 ./gradlew test
@@ -161,7 +167,10 @@ point étant le seul moyen de prouver que `save` ne duplique rien.
 # Tests d'intégration (driving + driven, nécessite Docker)
 ./gradlew testIntegration
 
-# Les deux, via check
+# Tests de composants (nécessite Docker)
+./gradlew testComponent
+
+# Les trois, via check
 ./gradlew build
 
 # Rapport de couverture agrégé (build/reports/jacoco/jacocoFullReport/)
@@ -189,6 +198,56 @@ point étant le seul moyen de prouver que `save` ne duplique rien.
 > ce sont des mutants équivalents, que le plugin Arcmutate Kotlin saurait écarter. 100 % de
 > mutants tués n'est pas un objectif atteignable ici, et ce n'est pas le but.
 
+## Tests de composants
+
+Un test de composant valide **l'application entière**, démarrée pour de vrai avec sa vraie
+base. On y teste le fonctionnement global — pas les règles métier précises, déjà couvertes
+par les tests unitaires du domaine.
+
+Les scénarios sont écrits en Gherkin (`src/testComponent/resources/features/rover.feature`),
+en langage métier : ils se lisent sans connaître le code, et un PO peut les relire.
+
+```gherkin
+Scenario: A rover does not drive through another rover
+  Given a board of 5 cells by 5
+  And a rover "Curiosity" landed at (2, 2) facing North
+  And a rover "Perseverance" landed at (2, 1) facing North
+  When I send the sequence "F" to rover "Perseverance"
+  Then rover "Perseverance" is at (2, 1) facing North
+  And rover "Curiosity" is at (2, 2) facing North
+```
+
+| Fichier | Rôle |
+|---------|------|
+| `rover.feature` | les scénarios, en langage métier |
+| `CucumberRunnerTest` | suite JUnit Platform (`@Suite` + moteur `cucumber`) **et** configuration Spring (`@CucumberContextConfiguration` + `@SpringBootTest(RANDOM_PORT)`) |
+| `RoverStepDefs` | traduction des phrases en appels HTTP RestAssured |
+| `DatabaseCleanupHooks` | `TRUNCATE` avant chaque scénario |
+| `junit-platform.properties` | `cucumber.plugin` → rapports `pretty`, HTML et JSON |
+
+**Isolation des scénarios.** Le contexte Spring et le conteneur Postgres sont partagés par
+toute la suite — les redémarrer à chaque scénario coûterait des minutes. L'isolation repose
+sur deux mécanismes :
+
+- tout l'état de l'application vit en base, donc un `TRUNCATE` dans un hook `@Before` suffit
+  à garantir qu'aucun scénario n'hérite du précédent, quel que soit l'ordre d'exécution ;
+- `cucumber-spring` recrée les classes de glue dans le scope `cucumber-glue`, donc l'id du
+  plateau et la dernière réponse HTTP mémorisés par `RoverStepDefs` repartent de zéro.
+
+> Le support de cours cite `io.cucumber:cucumber-junit` : c'est le module **JUnit 4**,
+> obsolète ici. La suite tourne sur `cucumber-junit-platform-engine` (JUnit 5).
+
+> Cucumber 7.34.x est compilé contre JUnit 5.14.2 / JUnit Platform 1.14.2 — exactement les
+> versions épinglées pour le moteur Kotest. C'est Cucumber qui s'aligne sur ces pins, pas
+> l'inverse : le BOM Spring Boot 4 pousse Jupiter 6, incompatible avec Kotest.
+
+> RestAssured n'est plus géré par le BOM Spring Boot 4 (il l'était en Boot 3) : sa version
+> est déclarée explicitement.
+
+> Sur Spring Boot 4, `@LocalServerPort` vit toujours dans
+> `org.springframework.boot.test.web.server` (contrairement à `@WebMvcTest`, qui a déménagé
+> dans `org.springframework.boot.webmvc.test.autoconfigure`).
+
 ## CI/CD
 
 Le pipeline GitHub Actions s'exécute sur chaque push/PR vers `main` ou `master` :
@@ -196,5 +255,11 @@ Le pipeline GitHub Actions s'exécute sur chaque push/PR vers `main` ou `master`
 1. Compilation et packaging (`assemble`)
 2. Tests unitaires + publication des résultats
 3. Tests d'intégration + publication des résultats
-4. Rapport JaCoCo agrégé (unitaires + intégration)
-5. Tests de mutation PITest (artefact uploadé)
+4. Tests de composants + publication des résultats et du rapport Cucumber
+5. Rapport JaCoCo agrégé (unitaires + intégration + composants)
+6. Tests de mutation PITest (artefact uploadé)
+
+> Les tests de composants ne font quasiment pas bouger la couverture agrégée
+> (98,48 % d'instructions avant comme après, 96,43 % → 97,62 % de branches) : ils repassent
+> sur du code déjà couvert. C'est attendu — leur valeur est la confiance dans l'assemblage
+> réel, pas le chiffre de couverture.

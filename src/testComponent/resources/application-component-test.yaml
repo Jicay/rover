@@ -1,0 +1,10 @@
+# Profil dedie aux tests de composants : l'URL, l'utilisateur et le mot de passe sont
+# injectes a chaud par Testcontainers (@DynamicPropertySource), le reste est ici.
+# Les logs sont mis en sourdine pour que la sortie `pretty` de Cucumber reste lisible.
+spring:
+  liquibase:
+    change-log: classpath:db/changelog.xml
+logging:
+  level:
+    liquibase: WARN
+    org.springframework: WARN

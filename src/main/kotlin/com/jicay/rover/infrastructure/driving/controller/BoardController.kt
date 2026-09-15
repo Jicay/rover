@@ -42,7 +42,6 @@ class BoardController(
     fun createBoard(@RequestBody request: CreateBoardRequest): ResponseEntity<Any> =
         respond(HttpStatus.CREATED) {
             createBoardUseCase.execute(
-                // L'identifiant est genere ici : le domaine reste deterministe et testable.
                 id = UUID.randomUUID().toString(),
                 width = request.width,
                 height = request.height,
@@ -73,10 +72,6 @@ class BoardController(
     fun getBoard(@PathVariable boardId: String): ResponseEntity<Any> =
         respond(HttpStatus.OK) { getBoardUseCase.execute(boardId) }
 
-    /**
-     * Traduction des erreurs metier en codes HTTP par try/catch explicite : pas de
-     * @RestControllerAdvice ni de @ExceptionHandler, le controller reste lisible de bout en bout.
-     */
     private fun respond(successStatus: HttpStatus, action: () -> Board): ResponseEntity<Any> =
         try {
             ResponseEntity.status(successStatus).body(BoardResponse.from(action()))

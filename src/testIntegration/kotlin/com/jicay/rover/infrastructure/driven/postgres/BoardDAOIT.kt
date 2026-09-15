@@ -18,14 +18,6 @@ import org.springframework.test.context.DynamicPropertyRegistry
 import org.springframework.test.context.DynamicPropertySource
 import org.testcontainers.postgresql.PostgreSQLContainer
 
-/**
- * Tests d'integration de la couche driven : on valide la persistance (SQL, schema Liquibase,
- * reconstruction de l'agregat) sur un vrai Postgres, pas les regles metier — celles-ci sont
- * couvertes par les tests unitaires du domaine.
- *
- * Chaque test suit les trois temps imposes par le cours :
- * preparation de la base, appel de la methode, verification du resultat ET du contenu de la base.
- */
 @SpringBootTest
 @ActiveProfiles("integration-test")
 class BoardDAOIT : FunSpec() {
@@ -37,13 +29,9 @@ class BoardDAOIT : FunSpec() {
     private lateinit var jdbcTemplate: JdbcTemplate
 
     init {
-        // Demarre le conteneur des l'instanciation de la classe de test, donc AVANT que
-        // SpringExtension ne construise le contexte : la DataSource et Liquibase trouvent
-        // une base joignable. Kotest arrete le conteneur en fin de run (afterProject).
         install(TestContainerProjectExtension(postgres))
         extension(SpringExtension())
 
-        // Les tests ne doivent rien se transmettre : on repart d'une base vide a chaque fois.
         beforeTest {
             jdbcTemplate.execute("TRUNCATE TABLE obstacles, rovers, boards RESTART IDENTITY CASCADE")
         }
@@ -83,7 +71,6 @@ class BoardDAOIT : FunSpec() {
 
             boardDAO.findById("unknown").shouldBeNull()
 
-            // La lecture infructueuse n'a rien ecrit : le plateau existant est intact.
             countOf("boards") shouldBe 1
         }
 
@@ -104,7 +91,6 @@ class BoardDAOIT : FunSpec() {
 
             boardDAO.findById("board-1") shouldBe board
 
-            // Le point du test : c'est le CONTENU des tables qui prouve l'idempotence.
             countOf("boards") shouldBe 1
             countOf("obstacles") shouldBe 2
             countOf("rovers") shouldBe 2
@@ -167,7 +153,6 @@ class BoardDAOIT : FunSpec() {
     private fun countOf(table: String): Int =
         jdbcTemplate.queryForObject("SELECT count(*) FROM $table", Int::class.java)!!
 
-    /** Lit le contenu brut d'une table, sans repasser par le DAO qu'on est en train de tester. */
     private fun rowsOf(sql: String): List<List<Any?>> =
         jdbcTemplate.query(sql) { rs, _ ->
             (1..rs.metaData.columnCount).map { rs.getObject(it) }
@@ -176,8 +161,6 @@ class BoardDAOIT : FunSpec() {
     companion object {
         private val postgres = PostgreSQLContainer("postgres:18-alpine")
 
-        // @DynamicPropertySource exige une methode statique : l'URL n'est connue qu'une fois
-        // le conteneur demarre, les valeurs sont donc fournies sous forme de lambdas.
         @JvmStatic
         @DynamicPropertySource
         fun datasourceProperties(registry: DynamicPropertyRegistry) {

@@ -8,10 +8,6 @@ import com.jicay.rover.domain.usecase.GetBoardUseCase
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
-/**
- * Seul endroit ou le domaine rencontre Spring : les use cases sont du Kotlin pur,
- * c'est la couche application qui les cable en beans.
- */
 @Configuration
 class UseCasesConfiguration {
 

@@ -1,3 +1,5 @@
+import dev.detekt.gradle.Detekt
+import dev.detekt.gradle.extensions.FailOnSeverity
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -6,6 +8,7 @@ plugins {
     kotlin("jvm") version "2.3.20"
     kotlin("plugin.spring") version "2.3.20"
     id("info.solidsoft.pitest") version "1.19.0"
+    id("dev.detekt") version "2.0.0-alpha.6"
     jacoco
 }
 
@@ -38,6 +41,23 @@ val cucumberVersion = "7.34.8"
 val restAssuredVersion = "6.0.1"
 
 val konsistVersion = "0.17.3"
+
+// Version de Kotlin embarquee par Detekt 2.0.0-alpha.6.
+val detektKotlinVersion = "2.4.10"
+
+// io.spring.dependency-management applique le BOM Spring Boot a TOUTES les configurations,
+// y compris "detekt". Le plugin Kotlin y publie kotlin.version = 2.3.20, ce qui ecrase le
+// "strictly 2.4.10" demande par Detekt et fait echouer la tache avec :
+//   "detekt was compiled with Kotlin 2.4.10 but is currently running with 2.3.20".
+// On redonne donc a la configuration "detekt" la version de Kotlin avec laquelle elle a ete
+// compilee. Cela n'affecte que le classpath de l'analyseur, jamais celui du projet.
+configurations.named("detekt") {
+    resolutionStrategy.eachDependency {
+        if (requested.group == "org.jetbrains.kotlin") {
+            useVersion(detektKotlinVersion)
+        }
+    }
+}
 
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter")
@@ -160,6 +180,28 @@ tasks.register<JacocoReport>("jacocoFullReport") {
     reports {
         xml.required = true
         html.required = true
+    }
+}
+
+detekt {
+    // On part de la configuration par defaut de Detekt et on ne versionne que les ecarts.
+    buildUponDefaultConfig = true
+    config.setFrom(files("$rootDir/config/detekt.yml"))
+    parallel = true
+
+    // L'analyse couvre les cinq source sets du projet, pas seulement "main".
+    source.setFrom(provider { sourceSets.map { it.allSource.srcDirs } })
+
+    // Une violation, quelle que soit sa severite, casse le build (cf. message de commit).
+    failOnSeverity = FailOnSeverity.Info
+}
+
+tasks.withType<Detekt>().configureEach {
+    reports {
+        html.required = true
+        checkstyle.required = true // le rapport XML de Detekt 2.x
+        sarif.required = false
+        markdown.required = false
     }
 }
 

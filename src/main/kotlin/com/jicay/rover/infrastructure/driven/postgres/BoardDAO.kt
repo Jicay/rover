@@ -9,23 +9,9 @@ import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate
 import org.springframework.stereotype.Repository
 import org.springframework.transaction.annotation.Transactional
 
-/**
- * Adapter driven : implementation Postgres du [BoardPort].
- *
- * Le SQL est ecrit a la main (pas de JPA, pas d'ORM) : c'est ici, et nulle part ailleurs,
- * que le modele relationnel rencontre l'agregat. Le domaine ignore tout de cette classe.
- */
 @Repository
 class BoardDAO(private val jdbcTemplate: NamedParameterJdbcTemplate) : BoardPort {
 
-    /**
-     * Ecrit l'agregat entier. L'operation est idempotente : la ligne `boards` est upsertee,
-     * les rovers et les obstacles du plateau sont supprimes puis reinseres. Sauvegarder deux
-     * fois le meme plateau laisse donc exactement les memes lignes en base.
-     *
-     * Le tout dans une seule transaction : a aucun moment un lecteur concurrent ne voit
-     * un plateau ampute de ses rovers.
-     */
     @Transactional
     override fun save(board: Board) {
         jdbcTemplate.update(
@@ -65,11 +51,6 @@ class BoardDAO(private val jdbcTemplate: NamedParameterJdbcTemplate) : BoardPort
         }
     }
 
-    /**
-     * Reconstruit l'agregat complet, ou `null` si le plateau n'existe pas.
-     * Les rovers sont relus dans leur ordre de deploiement (cf. colonne `created_at`),
-     * pour que l'aller-retour restitue une liste identique a celle sauvegardee.
-     */
     @Transactional(readOnly = true)
     override fun findById(id: String): Board? {
         val idParam = mapOf("id" to id)

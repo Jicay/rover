@@ -29,8 +29,6 @@
             referencedColumnNames="id"
             onDelete="CASCADE"/>
 
-        <!-- Board.obstacles est un Set : deux obstacles ne peuvent pas occuper la meme case.
-             La contrainte d'unicite fait respecter cet invariant cote base. -->
         <addUniqueConstraint
             tableName="obstacles"
             columnNames="board_id, x, y"

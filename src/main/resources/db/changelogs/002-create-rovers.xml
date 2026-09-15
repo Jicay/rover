@@ -10,8 +10,6 @@
             <column name="board_id" type="VARCHAR(64)">
                 <constraints nullable="false"/>
             </column>
-            <!-- L'identifiant d'un rover est fourni par le client : il n'est unique
-                 qu'au sein d'un plateau, d'ou la cle primaire composite ci-dessous. -->
             <column name="rover_id" type="VARCHAR(64)">
                 <constraints nullable="false"/>
             </column>
@@ -24,16 +22,11 @@
             <column name="direction" type="VARCHAR(1)">
                 <constraints nullable="false"/>
             </column>
-            <!-- clock_timestamp() (et non now()) : il avance a chaque instruction, meme
-                 dans une seule transaction. C'est ce qui restitue l'ordre de deploiement
-                 des rovers, puisque Board.rovers est une liste ordonnee. -->
             <column name="created_at" type="TIMESTAMP WITH TIME ZONE" defaultValueComputed="clock_timestamp()">
                 <constraints nullable="false"/>
             </column>
         </createTable>
 
-        <!-- Invariant du domaine « deux rovers d'un meme plateau n'ont jamais le meme id »,
-             tenu en base et pas seulement en memoire par l'agregat. -->
         <addPrimaryKey tableName="rovers" columnNames="board_id, rover_id" constraintName="pk_rovers"/>
 
         <addForeignKeyConstraint

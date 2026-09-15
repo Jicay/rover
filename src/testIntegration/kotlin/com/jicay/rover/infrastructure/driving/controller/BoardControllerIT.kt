@@ -29,11 +29,6 @@ import org.springframework.test.web.servlet.get
 import org.springframework.test.web.servlet.post
 import java.util.UUID
 
-/**
- * Tests d'integration de la couche driving : on valide le cablage Spring MVC
- * (routage, (de)serialisation JSON, codes HTTP), pas les regles metier.
- * Les use cases sont mockes : le domaine est deja couvert par les tests unitaires.
- */
 @WebMvcTest(BoardController::class)
 class BoardControllerIT : FunSpec() {
 
@@ -53,8 +48,6 @@ class BoardControllerIT : FunSpec() {
     private lateinit var getBoardUseCase: GetBoardUseCase
 
     init {
-        // Branche le TestContext Spring sur le cycle de vie Kotest : injection des champs
-        // @Autowired / @MockkBean, et remise a zero des mocks entre chaque test.
         extension(SpringExtension())
 
         context("POST /boards") {
@@ -88,7 +81,6 @@ class BoardControllerIT : FunSpec() {
                 verify(exactly = 1) {
                     createBoardUseCase.execute(any(), 5, 4, setOf(Position(1, 1)))
                 }
-                // L'identifiant est genere par la couche driving, pas par le domaine.
                 shouldNotThrowAny { UUID.fromString(generatedId.captured) }
             }
 

@@ -19,6 +19,12 @@ import org.testcontainers.postgresql.PostgreSQLContainer
 @CucumberContextConfiguration
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("component-test")
+// UtilityClassWithPublicConstructor voudrait un `object` puisque la classe ne contient
+// qu'un companion. C'est impossible ici : JUnit Platform instancie la classe porteuse de
+// @Suite, et @CucumberContextConfiguration / @SpringBootTest exigent eux aussi une classe.
+// Suppression locale plutot qu'une exclusion dans detekt.yml : la contrainte vient de cette
+// classe precise, pas des tests en general, ou la regle garde tout son sens.
+@Suppress("UtilityClassWithPublicConstructor")
 class CucumberRunnerTest {
 
     companion object {

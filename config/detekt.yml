@@ -1,0 +1,34 @@
+# Configuration Detekt du projet rover.
+#
+# Ce fichier ne contient QUE les ecarts par rapport a la configuration par defaut de
+# Detekt (`buildUponDefaultConfig = true` dans build.gradle.kts). Recopier les 859 lignes
+# du fichier par defaut rendrait ces quelques ecarts illisibles.
+#
+# Aucune baseline n'est utilisee : les violations ont ete corrigees, pas gelees.
+
+complexity:
+  # Une classe de step definitions Cucumber declare une fonction par phrase Gherkin
+  # (13 pour RoverStepDefs) : le nombre de fonctions y mesure la taille du langage
+  # metier, pas la complexite de la classe.
+  # Detekt exempte deja les tests de cette regle, mais via une liste de chemins
+  # conventionnels ('**/test/**', '**/jvmTest/**', ...) qui ne connait pas les source
+  # sets testIntegration / testComponent / testArchitecture de ce projet. On retablit
+  # donc l'intention d'origine pour l'ensemble de nos source sets de test.
+  TooManyFunctions:
+    excludes: ['**/src/test*/**']
+
+style:
+  # Meme raison que TooManyFunctions : la valeur par defaut exclut deja '**/test/**'.
+  # Dans un test, `Board("b", 5, 3)` est plus lisible que trois constantes nommees :
+  # le nombre EST la donnee du cas de test.
+  MagicNumber:
+    excludes: ['**/src/test*/**']
+
+  # Board.deployRover enchaine trois guard clauses (`if (...) throw ...`) qui valident
+  # ses preconditions, chacune avec son exception metier dediee. Les fusionner pour
+  # descendre a deux `throw` appauvrirait le diagnostic rendu a l'appelant.
+  # `excludeGuardClauses` est l'option prevue par la regle elle-meme pour ce cas : on ne
+  # desactive pas ThrowsCount, qui continue de detecter les `throw` disperses dans un
+  # flot de controle complexe.
+  ThrowsCount:
+    excludeGuardClauses: true

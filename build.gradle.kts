@@ -37,6 +37,13 @@ configurations.all {
 
 val kotestVersion = "6.1.11"
 
+// Cucumber 7.34.x est compile contre JUnit 5.14.2 / JUnit Platform 1.14.2, exactement les
+// versions epinglees ci-dessus : c'est lui qui s'aligne sur Kotest, pas l'inverse.
+val cucumberVersion = "7.34.8"
+
+// RestAssured n'est PAS gere par le BOM Spring Boot 4 (il l'etait en Boot 3) : version explicite.
+val restAssuredVersion = "6.0.1"
+
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter")
     implementation("org.springframework.boot:spring-boot-starter-web")
@@ -87,15 +94,46 @@ testing {
                 implementation("io.kotest:kotest-extensions-testcontainers:$kotestVersion")
             }
         }
+
+        // Les tests de composants vivent eux aussi dans leur propre source set
+        // (src/testComponent/kotlin) : ils demarrent l'application entiere et ne mockent rien.
+        register<JvmTestSuite>("testComponent") {
+            useJUnitJupiter("5.14.2")
+            dependencies {
+                implementation(project())
+                // Apporte spring-boot-test (@SpringBootTest, @LocalServerPort) et spring-test
+                // (@DynamicPropertySource). Mockito est exclu : un test de composant ne mocke rien.
+                implementation("org.springframework.boot:spring-boot-starter-test") {
+                    exclude(group = "org.mockito")
+                }
+                // Le BOM Cucumber aligne cucumber-java, cucumber-spring et le moteur JUnit Platform.
+                implementation(platform("io.cucumber:cucumber-bom:$cucumberVersion"))
+                implementation("io.cucumber:cucumber-java")
+                implementation("io.cucumber:cucumber-spring")
+                // Le moteur JUnit Platform remplace l'ancien io.cucumber:cucumber-junit (JUnit 4),
+                // que le support de cours cite encore : inutile ici, la suite tourne sur JUnit 5.
+                implementation("io.cucumber:cucumber-junit-platform-engine")
+                // @Suite / @IncludeEngines. Version imposee a 1.14.2 par le resolutionStrategy.
+                implementation("org.junit.platform:junit-platform-suite")
+                implementation("io.rest-assured:rest-assured:$restAssuredVersion")
+                // Version heritee du BOM Spring Boot 4 (2.0.5), comme pour testIntegration.
+                implementation("org.testcontainers:testcontainers-postgresql")
+                implementation("io.kotest:kotest-assertions-core:$kotestVersion")
+            }
+        }
     }
 }
 
-// Sans ca, `./gradlew build` ne compilerait meme pas src/testIntegration.
+// Sans ca, `./gradlew build` ne compilerait meme pas src/testIntegration et src/testComponent.
 tasks.check {
-    dependsOn(testing.suites.named("testIntegration"))
+    dependsOn(testing.suites.named("testIntegration"), testing.suites.named("testComponent"))
 }
 
 configurations.named("testIntegrationImplementation") {
+    extendsFrom(configurations.implementation.get())
+}
+
+configurations.named("testComponentImplementation") {
     extendsFrom(configurations.implementation.get())
 }
 
@@ -122,14 +160,14 @@ tasks.jacocoTestReport {
     }
 }
 
-// Couverture agregee : tests unitaires + tests d'integration.
+// Couverture agregee : tests unitaires + tests d'integration + tests de composants.
 tasks.register<JacocoReport>("jacocoFullReport") {
     group = "verification"
-    description = "Rapport JaCoCo agregeant les tests unitaires et les tests d'integration"
-    dependsOn(tasks.test, tasks.named("testIntegration"))
+    description = "Rapport JaCoCo agregeant les tests unitaires, d'integration et de composants"
+    dependsOn(tasks.test, tasks.named("testIntegration"), tasks.named("testComponent"))
     executionData(
         fileTree(layout.buildDirectory.dir("jacoco")) {
-            include("test.exec", "testIntegration.exec")
+            include("test.exec", "testIntegration.exec", "testComponent.exec")
         }
     )
     sourceSets(sourceSets.main.get())

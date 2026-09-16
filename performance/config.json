@@ -1,0 +1,59 @@
+{
+  "scenarios": {
+    "chauffe": {
+      "executor": "constant-arrival-rate",
+      "exec": "parcours",
+      "rate": 10,
+      "timeUnit": "1s",
+      "duration": "20s",
+      "preAllocatedVUs": 10,
+      "maxVUs": 50,
+      "startTime": "0s",
+      "gracefulStop": "5s"
+    },
+    "performance": {
+      "executor": "constant-arrival-rate",
+      "exec": "parcours",
+      "rate": 5,
+      "timeUnit": "1s",
+      "duration": "30s",
+      "preAllocatedVUs": 10,
+      "maxVUs": 50,
+      "startTime": "30s",
+      "gracefulStop": "5s"
+    },
+    "charge": {
+      "executor": "constant-arrival-rate",
+      "exec": "parcours",
+      "rate": 25,
+      "timeUnit": "1s",
+      "duration": "1m",
+      "preAllocatedVUs": 30,
+      "maxVUs": 150,
+      "startTime": "1m10s",
+      "gracefulStop": "10s"
+    },
+    "stress": {
+      "executor": "ramping-arrival-rate",
+      "exec": "parcours",
+      "startRate": 50,
+      "timeUnit": "1s",
+      "preAllocatedVUs": 100,
+      "maxVUs": 1500,
+      "startTime": "2m20s",
+      "gracefulStop": "15s",
+      "stages": [
+        { "target": 200, "duration": "30s" },
+        { "target": 500, "duration": "30s" },
+        { "target": 500, "duration": "30s" },
+        { "target": 0, "duration": "10s" }
+      ]
+    }
+  },
+  "thresholds": {
+    "http_req_failed{scenario:performance}": ["rate<0.01"],
+    "http_req_duration{scenario:performance}": ["p(95)<40"],
+    "http_req_failed{scenario:charge}": ["rate<0.01"],
+    "http_req_duration{scenario:charge}": ["p(95)<25"]
+  }
+}

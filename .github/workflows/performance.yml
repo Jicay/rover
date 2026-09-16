@@ -1,0 +1,39 @@
+name: Performance
+
+on:
+  workflow_dispatch:
+
+jobs:
+  k6:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start environment
+        run: docker compose up --detach --build --wait
+
+      - name: Run k6
+        run: |
+          set -o pipefail
+          docker run --rm --network rover \
+            --volume "${{ github.workspace }}/performance:/performance:ro" \
+            --env BASE_URL=http://rover:8080 \
+            grafana/k6:1.1.0 run --quiet --summary-mode full \
+            --config /performance/config.json /performance/index.js \
+            | tee k6-summary.txt
+
+      - name: Upload k6 summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-summary
+          path: k6-summary.txt
+
+      - name: Application logs
+        if: failure()
+        run: docker compose logs rover
+
+      - name: Stop environment
+        if: always()
+        run: docker compose down --volumes

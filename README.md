@@ -130,6 +130,7 @@ dans une seule transaction) sert à relire les rovers dans leur ordre de déploi
 - **MockK** pour les mocks, **SpringMockK** (`@MockkBean`) pour les beans mockés
 - **JaCoCo** pour la couverture de code
 - **PITest** (mutateurs `STRONGER`) pour les tests de mutation du domaine
+- **k6** pour les tests de performance, **Docker Compose** pour l'environnement qu'ils mesurent
 
 ## Lancer l'application
 
@@ -142,6 +143,54 @@ docker run -d --name rover-pg -p 5432:5432 \
 
 Liquibase crée les trois tables au démarrage. L'URL, l'utilisateur et le mot de passe sont
 surchargeables par `DATABASE_URL`, `DATABASE_USERNAME` et `DATABASE_PASSWORD`.
+
+## Environnement dockerisé
+
+Les tests de performance ont besoin d'une application **réellement déployée**, pas d'un
+`bootRun` lancé depuis l'IDE. `docker-compose.yml` démarre l'application et sa base :
+
+```bash
+# Construit l'image, démarre Postgres puis l'application, et ne rend la main
+# qu'une fois les deux conteneurs sains (--wait)
+docker compose up --detach --build --wait
+
+# Vérification
+curl http://localhost:8080/actuator/health
+
+# Démontage complet, volume de la base compris
+docker compose down --volumes
+```
+
+| Service | Image | Port | Santé |
+|---------|-------|------|-------|
+| `postgres` | `postgres:18-alpine` | 5432 | `pg_isready` |
+| `rover` | construite par le `Dockerfile` | 8080 | `GET /actuator/health` |
+
+**Image de l'application : `Dockerfile` multi-étages, pas `bootBuildImage`.** Les buildpacks
+Spring Boot produisent une meilleure image sans écrire une ligne de Dockerfile, mais ils ne
+sont pas déclenchables par Compose : il faudrait lancer `./gradlew bootBuildImage` *avant*
+`docker compose up`, donc deux commandes et un JDK 25 installé sur le poste. Avec un
+`Dockerfile`, `build: .` suffit et **une seule commande** monte l'environnement complet,
+sur un poste qui n'a que Docker. La première étape compile le jar dans un
+`eclipse-temurin:25-jdk`, la seconde n'embarque qu'un `eclipse-temurin:25-jre`.
+
+**L'application attend sa base** par un double verrou :
+
+1. `postgres` déclare un `healthcheck` (`pg_isready`) ; `rover` déclare
+   `depends_on: postgres: condition: service_healthy`. Compose ne démarre donc l'application
+   qu'une fois la base **prête à accepter des connexions** — et non pas seulement « conteneur
+   démarré », ce que fait un `depends_on` nu et qui rend le démarrage aléatoire : Liquibase se
+   connecte dans les toutes premières secondes de vie de l'application et échoue si la base
+   n'écoute pas encore.
+2. `rover` déclare à son tour un `healthcheck` HTTP sur `/actuator/health`. C'est ce qui donne
+   un sens à `docker compose up --wait` : la commande ne rend la main que lorsque l'API répond
+   vraiment, migrations Liquibase appliquées. Sans cela, k6 démarrerait pendant l'initialisation
+   du contexte Spring et mesurerait le démarrage de la JVM.
+
+> `spring-boot-starter-actuator` est ajouté pour ce seul besoin. Un conteneur ne peut pas
+> s'auto-diagnostiquer avec un `depends_on` : il lui faut un endpoint que Docker puisse
+> interroger. `curl` est installé dans l'image finale pour la même raison —
+> `eclipse-temurin:25-jre` est une image Ubuntu minimale qui n'embarque ni `curl` ni `wget`.
 
 ## Lancer les tests
 
@@ -248,6 +297,169 @@ sur deux mécanismes :
 > `org.springframework.boot.test.web.server` (contrairement à `@WebMvcTest`, qui a déménagé
 > dans `org.springframework.boot.webmvc.test.autoconfigure`).
 
+## Tests de performance
+
+Tous les niveaux précédents se suffisaient d'un contexte Spring en mémoire. Un test de
+performance, non : il mesure une **application déployée**, avec sa vraie base, son vrai réseau
+et son vrai serveur HTTP. C'est la raison d'être du `docker-compose.yml` ci-dessus.
+
+Le dossier `performance/` suit le découpage du support de cours :
+
+| Fichier | Rôle |
+|---------|------|
+| `config.json` | les scénarios (`executor`, `rate`, `duration`, `preAllocatedVUs`, `maxVUs`, `exec`) et les `thresholds` |
+| `index.js` | les appels HTTP — le parcours métier |
+
+### Le parcours mesuré
+
+Un `GET` trivial ne mesurerait que Tomcat. Chaque itération rejoue le parcours métier complet,
+soit **6 requêtes** :
+
+1. `POST /boards` — un plateau 10×10 avec 5 obstacles tirés au hasard ;
+2. `POST /boards/{id}/rovers` ×2 — deux rovers déployés en `(0,0)` et `(0,2)` ;
+3. `POST /boards/{id}/rovers/{roverId}/commands` ×2 — une séquence de 15 commandes `FBLR`
+   tirées au hasard ;
+4. `GET /boards/{id}` — relecture de l'état.
+
+C'est ce parcours qui met le domaine **et** la base sous charge : `BoardDAO.save` réécrit
+l'agrégat entier (upsert du plateau, suppression puis réinsertion des rovers et des obstacles)
+à chaque écriture, donc chaque `POST` coûte plusieurs allers-retours SQL.
+
+Le tirage aléatoire est contraint pour ne jamais produire d'erreur métier : les obstacles
+naissent en `x ≥ 4`, loin des positions de départ des rovers, et un plateau neuf est créé à
+chaque itération. Sans cette précaution, un `409 Position already occupied` ferait grimper
+`http_req_failed` et on mesurerait la gestion d'erreur au lieu de la performance. Les commandes,
+elles, peuvent être totalement aléatoires : un mouvement bloqué par un mur, un obstacle ou un
+autre rover n'est pas une erreur, le rover reste sur place et la séquence continue.
+
+Chaque requête porte un tag `name` fixe (`POST /boards/_/rovers`, …). Sans lui, k6 agrégerait
+par URL et produirait des dizaines de milliers de métriques distinctes — une par UUID de plateau.
+
+### Les scénarios
+
+```bash
+docker compose up --detach --build --wait
+k6 run --config performance/config.json --summary-mode full performance/index.js
+docker compose down --volumes
+```
+
+Les quatre scénarios s'enchaînent dans une seule exécution, séquencés par leur `startTime` :
+
+| Scénario | Executor | Charge | Ce qu'il illustre |
+|----------|----------|--------|-------------------|
+| `chauffe` | `constant-arrival-rate` | 10 it/s pendant 20 s | rien — il chauffe la JVM (voir plus bas) |
+| `performance` | `constant-arrival-rate` | 5 it/s pendant 30 s | **test de performance** : la latence de référence, à charge faible, quand rien ne contend. C'est le meilleur temps de réponse que l'application sait offrir |
+| `charge` | `constant-arrival-rate` | 25 it/s pendant 1 min | **test de charge** : la charge nominale attendue, tenue dans la durée. La question posée est « est-ce que ça tient ? », pas « jusqu'où ça monte ? » |
+| `stress` | `ramping-arrival-rate` | rampe 50 → 200 → 500 it/s | **test de stress** : on pousse délibérément au-delà du nominal pour trouver le point de rupture. Son résultat n'est pas un pass/fail, c'est un chiffre : la limite |
+
+Les deux premiers sont à **débit constant** (`constant-arrival-rate`), le troisième à **débit
+croissant** (`ramping-arrival-rate`). C'est la différence structurante : un executor en
+`arrival-rate` impose un débit d'arrivée indépendant des temps de réponse, à la différence des
+executors en `vus` où une application qui ralentit reçoit mécaniquement moins de trafic — et où
+la saturation devient donc invisible.
+
+### Les chiffres mesurés
+
+Mesure de référence, environnement neuf (`docker compose down --volumes` puis `up`), Apple
+Silicon sous Docker Desktop :
+
+| Scénario | Débit obtenu | latence `p(95)` | `p(50)` | max | échecs HTTP | itérations abandonnées |
+|----------|--------------|-----------------|---------|-----|-------------|------------------------|
+| `chauffe` | 60 req/s | 14,94 ms | 6,52 ms | 244,95 ms | 0 % | 0 |
+| `performance` | 30 req/s | **16,09 ms** | 8,57 ms | 81,32 ms | 0 % | 0 |
+| `charge` | 150 req/s | **8,44 ms** | 4,55 ms | 58,86 ms | 0 % | 0 |
+| `stress` | ≈ 1 850 req/s en moyenne sur la rampe | **367,15 ms** | 20,30 ms | 1,59 s | 0 % | **922 (2,9 %)** |
+
+Une seconde exécution, lancée sans redémonter l'environnement — la base contenait alors déjà
+les ~35 000 plateaux du premier run — donne `p(95)` = 14,23 ms pour `performance` et 8,34 ms
+pour `charge` : les deux scénarios nominaux sont **stables**. Le scénario `stress`, lui, se
+dégrade nettement (`p(95)` 367 ms → 646 ms, 922 → 1 541 itérations abandonnées). Un seuil de
+charge peut donc être calibré sans précaution particulière ; une mesure de stress, elle, n'a de
+sens qu'à partir d'un état de base connu — c'est-à-dire après `docker compose down --volumes`.
+
+Les `thresholds` en découlent, réglés à environ **2,5 à 3 fois** la valeur mesurée : assez près
+pour qu'une régression réelle les casse, assez loin pour ne pas clignoter au moindre bruit de
+mesure.
+
+```json
+"thresholds": {
+  "http_req_failed{scenario:performance}":   ["rate<0.01"],
+  "http_req_duration{scenario:performance}": ["p(95)<40"],
+  "http_req_failed{scenario:charge}":        ["rate<0.01"],
+  "http_req_duration{scenario:charge}":      ["p(95)<25"]
+}
+```
+
+Les seuils sont **taggés par scénario**. Un seuil global serait ininterprétable : la rampe de
+stress, qui représente 94 % des requêtes du run, écraserait à elle seule la mesure des deux
+autres scénarios (`p(95)` global = 355 ms, contre 8,44 ms pour le seul scénario de charge).
+
+**`stress` n'a volontairement aucun threshold.** Un test de stress qui « passe » n'a rien
+mesuré : on l'écrit pour trouver la limite, pas pour la valider. Lui donner un seuil obligerait
+soit à le calibrer si haut qu'il ne détecte rien, soit à faire échouer le build à chaque
+exécution.
+
+### Ce que le stress a montré
+
+À 500 itérations/s visées, l'application ne renvoie **aucune erreur** — `http_req_failed` reste
+à 0 %. La rupture ne se lit pas dans le taux d'échec mais ailleurs :
+
+- la latence `p(95)` passe de 8,44 ms à 367 ms, soit un facteur **43** ;
+- la durée d'une itération complète passe de 44 ms à 1,88 s au `p(95)` ;
+- 922 itérations sont **abandonnées** (`dropped_iterations`) : au moment programmé, plus aucun
+  VU n'était libre, parce que les précédents étaient encore en train d'attendre.
+
+C'est le comportement typique d'une saturation de file d'attente : Tomcat accepte les
+connexions, HikariCP fait patienter, et la dégradation se manifeste en temps de réponse, pas en
+code d'erreur. **Surveiller uniquement le taux d'erreur ne détecte pas ce type de panne.**
+
+### Les pièges rencontrés
+
+**La JVM démarre froide.** Sans le scénario `chauffe`, le premier scénario exécuté paie le
+coût du JIT et de l'ouverture du pool de connexions : mesuré à 19,36 ms de `p(95)` sur une JVM
+froide contre 14,78 ms sur la même JVM chaude, soit **24 % d'écart**, uniquement dû à l'ordre
+d'exécution. Sans phase de chauffe, la ligne de référence mesure le démarrage de l'application.
+
+**La latence ne croît pas avec la charge.** Le résultat le plus contre-intuitif de la mesure :
+le scénario `performance` (30 req/s) est **deux fois plus lent** que le scénario `charge`
+(150 req/s) — 16,09 ms contre 8,44 ms de `p(95)`. L'effet est reproductible, et il subsiste
+après la phase de chauffe : ce n'est donc pas le JIT. L'explication la plus probable est que la
+machine hôte n'est jamais tout à fait chaude à débit faible — cœurs parqués, fréquence basse,
+caches CPU et buffers Postgres refroidis entre deux requêtes espacées de 30 ms. Sous charge
+soutenue, toute la pile reste chaude. La leçon n'est pas l'explication, c'est le fait :
+**une mesure à faible débit n'est pas automatiquement le « meilleur cas »**, et un `p(95)` sur
+900 requêtes est de toute façon bien plus bruité que sur 9 000.
+
+**Les chiffres ci-dessus valent pour cette machine.** Sur un runner GitHub Actions partagé à
+2 ou 4 vCPU, ils seront plusieurs fois supérieurs. Recalibrer les seuils fait partie du travail
+d'installation des tests dans un nouvel environnement ; c'est précisément pour cette raison
+qu'ils ne gardent pas le pipeline (voir CI/CD).
+
+### k6 : local ou via Docker
+
+Les deux fonctionnent, le script et la configuration sont identiques.
+
+```bash
+# k6 installé localement (brew install k6) — le plus pratique pour itérer
+k6 run --config performance/config.json --summary-mode full performance/index.js
+
+# k6 via son image Docker — aucune installation requise
+docker run --rm --network rover \
+  --volume "$PWD/performance:/performance:ro" \
+  --env BASE_URL=http://rover:8080 \
+  grafana/k6:1.1.0 run --quiet --summary-mode full \
+  --config /performance/config.json /performance/index.js
+```
+
+La variante Docker est celle de la CI : elle n'impose aucune installation et **épingle la
+version de k6**, ce qui compte pour comparer deux mesures dans le temps. Elle rejoint
+l'application par le réseau Compose (`networks.default.name: rover` fixe son nom, sinon Compose
+le dérive du nom du dossier) et l'appelle par son nom de service, `http://rover:8080` : pas de
+`--network host`, qui ne se comporte pas de la même façon sur macOS et sur Linux.
+
+En local, k6 installé directement est plus agréable — sortie en couleurs, pas de conteneur à
+relancer — et supprime une couche de virtualisation entre l'injecteur et l'application.
+
 ## CI/CD
 
 Le pipeline GitHub Actions s'exécute sur chaque push/PR vers `main` ou `master` :
@@ -263,3 +475,26 @@ Le pipeline GitHub Actions s'exécute sur chaque push/PR vers `main` ou `master`
 > (98,48 % d'instructions avant comme après, 96,43 % → 97,62 % de branches) : ils repassent
 > sur du code déjà couvert. C'est attendu — leur valeur est la confiance dans l'assemblage
 > réel, pas le chiffre de couverture.
+
+Les tests de performance vivent dans un **workflow séparé**, `performance.yml`, déclenché
+**manuellement** (`workflow_dispatch`) :
+
+1. construction de l'image et démarrage de l'environnement (`docker compose up --wait`)
+2. exécution de k6 depuis son image Docker
+3. publication du résumé k6 en artefact, logs de l'application en cas d'échec
+4. `docker compose down --volumes`, toujours, même si k6 a échoué
+
+**Pourquoi pas dans `ci.yml`, sur chaque push ?** Deux raisons, et la seconde est la vraie.
+
+- Le coût : construire l'image puis exécuter la campagne ajoute plusieurs minutes à un build
+  qui doit rester court pour être utile.
+- La validité : un runner GitHub Actions est une machine partagée, à 2 ou 4 vCPU, dont la
+  charge voisine est invisible. Un seuil de latence y varie d'un run à l'autre sans qu'aucune
+  ligne de code n'ait changé. Le brancher sur chaque push, c'est produire des échecs aléatoires
+  — et la seule réaction rationnelle des développeurs face à un test qui échoue au hasard est
+  de relancer le build, puis de relever le seuil, puis de l'ignorer. Un test de performance
+  instable ne protège de rien et apprend à ne pas regarder les rouges.
+
+La mesure qui fait foi est celle d'un environnement dédié et stable. En CI partagée, le
+workflow manuel garde sa valeur : il vérifie que l'environnement se monte, que le parcours
+tient sous charge, et il donne un ordre de grandeur — pas une mesure de référence.

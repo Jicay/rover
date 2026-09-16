@@ -1,6 +1,7 @@
 package com.jicay.rover.infrastructure.driven.postgres
 
 import com.jicay.rover.domain.model.Board
+import com.jicay.rover.domain.model.BoardSummary
 import com.jicay.rover.domain.model.Direction
 import com.jicay.rover.domain.model.Position
 import com.jicay.rover.domain.model.Rover
@@ -147,6 +148,43 @@ class BoardDAOIT : FunSpec() {
 
             rowsOf("SELECT direction FROM rovers WHERE board_id = 'board-1' ORDER BY x") shouldBe
                 listOf(listOf("N"), listOf("E"), listOf("S"), listOf("W"))
+        }
+
+        test("recent boards come back newest first, counted, without loading the aggregates") {
+            boardDAO.save(Board(id = "board-1", width = 3, height = 3))
+            boardDAO.save(
+                Board(
+                    id = "board-2",
+                    width = 5,
+                    height = 4,
+                    obstacles = setOf(Position(1, 1), Position(2, 2)),
+                    rovers = listOf(Rover("rover-1", Position(0, 0), Direction.N)),
+                ),
+            )
+            boardDAO.save(Board(id = "board-3", width = 2, height = 2))
+
+            boardDAO.findRecent(10) shouldBe listOf(
+                BoardSummary(id = "board-3", width = 2, height = 2, roverCount = 0, obstacleCount = 0),
+                BoardSummary(id = "board-2", width = 5, height = 4, roverCount = 1, obstacleCount = 2),
+                BoardSummary(id = "board-1", width = 3, height = 3, roverCount = 0, obstacleCount = 0),
+            )
+        }
+
+        test("the limit caps the listing to the newest boards") {
+            boardDAO.save(Board(id = "board-1", width = 3, height = 3))
+            boardDAO.save(Board(id = "board-2", width = 4, height = 4))
+            boardDAO.save(Board(id = "board-3", width = 5, height = 5))
+
+            boardDAO.findRecent(2).map { it.id } shouldBe listOf("board-3", "board-2")
+        }
+
+        test("saving a board twice keeps its original place in the listing") {
+            boardDAO.save(Board(id = "board-1", width = 3, height = 3))
+            boardDAO.save(Board(id = "board-2", width = 4, height = 4))
+
+            boardDAO.save(Board(id = "board-1", width = 3, height = 3, obstacles = setOf(Position(0, 0))))
+
+            boardDAO.findRecent(10).map { it.id } shouldBe listOf("board-2", "board-1")
         }
     }
 

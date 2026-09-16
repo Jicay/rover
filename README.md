@@ -54,7 +54,8 @@ application/    # UseCasesConfiguration — câblage des use cases en beans Spri
 infrastructure/
 ├── driving/
 │   ├── controller/  # BoardController — routes REST
-│   └── dto/         # DTO d'entrée/sortie, isolés du modèle de domaine
+│   ├── dto/         # DTO d'entrée/sortie, isolés du modèle de domaine
+│   └── view/        # BoardViewController, BoardView — interface Thymeleaf
 └── driven/
     └── postgres/    # BoardDAO — implémentation Postgres de BoardPort (SQL écrit à la main)
 ```
@@ -88,6 +89,156 @@ Les erreurs métier sont traduites par un `try/catch` explicite dans le controll
 Un corps de requête malformé (JSON invalide, champ obligatoire absent, direction inconnue)
 donne `400` via le traitement par défaut de Spring MVC.
 
+## Interface web
+
+L'interface est rendue **côté serveur** par Thymeleaf. Pas de SPA, pas de framework front :
+quatre formulaires HTML, un tableau, et une trentaine de lignes de JavaScript pour le seul
+joystick. Le cours porte sur les tests, pas sur le front — et un rendu serveur donne un DOM
+déterministe, entièrement présent au `load` de la page, ce qui supprime la première source de
+flakiness des tests end-to-end (attendre qu'un composant se monte).
+
+L'habillage est celui d'un jeu de tactique au tour par tour, parce que c'est ce que le kata
+**est** : des unités sur une grille, du terrain qui bloque, des ordres envoyés en séquence.
+Le sol est du régolithe texturé, les rochers sont des cases creusées, et chaque rover reçoit
+une couleur d'unité (`BoardView` attribue un index de palette par ordre de débarquement) pour
+qu'on repère d'un coup d'œil qui est où. Le vocabulaire de l'écran suit — secteur, rochers,
+débarquer, cap Est — mais **le domaine, les routes et les champs de formulaire gardent leurs
+noms** : `board`, `obstacles`, `direction`. L'habillage ne traverse pas l'hexagone.
+
+| Route | Méthode | Rôle |
+|-------|---------|------|
+| `/` | `GET` | formulaire de création, et liste des secteurs récents |
+| `/ui/boards` | `POST` | crée le plateau, redirige vers sa page |
+| `/ui/boards/{boardId}` | `GET` | la page du plateau : grille + formulaires |
+| `/ui/boards/{boardId}/rovers` | `POST` | déploie un rover, redirige vers la page |
+| `/ui/boards/{boardId}/commands` | `POST` | envoie une séquence au rover sélectionné |
+
+**Le préfixe `/ui` n'est pas cosmétique.** `BoardController` expose déjà `GET /boards/{boardId}`
+en JSON. Une vue montée sur le même chemin donnerait un *ambiguous mapping* et l'application
+refuserait de démarrer. Séparer les deux arbres d'URL laisse l'API REST intacte : c'est le même
+domaine derrière deux adapters driving, pas une API réécrite pour les besoins de l'écran.
+
+**Chaque écriture suit le motif POST/redirect/GET.** Les trois `POST` ne rendent jamais de HTML :
+ils redirigent vers `GET /ui/boards/{boardId}`. Un `F5` après un envoi de commandes ne rejoue donc
+pas la séquence. Les erreurs métier (`RoverDomainException`) sont attrapées par le contrôleur de
+vue, poussées en *flash attribute* et affichées sur la page d'arrivée — le même `try/catch`
+explicite que dans `BoardController`, pas de `@ControllerAdvice`.
+
+**La grille est construite en Kotlin, pas dans le template.** `BoardView.from(board)` produit
+directement la liste des lignes, de `y = height - 1` à `y = 0`, pour que l'origine `(0,0)` du
+domaine se retrouve **en bas à gauche** à l'écran et non en haut à gauche comme le voudrait
+l'ordre naturel d'un `<table>`. Le template ne fait que deux `th:each` imbriqués : aucune
+arithmétique, aucune logique métier dans le HTML.
+
+`BoardViewController` et `BoardView` vivent dans `infrastructure/driving/view` : ce sont des
+adapters driving au même titre que le contrôleur REST, et les tests d'architecture Konsist du
+TP5 continuent de s'appliquer sans modification (le domaine reste intouché, `driving` et `driven`
+continuent de s'ignorer).
+
+### La liste des secteurs précédents
+
+L'accueil liste les **douze secteurs les plus récents**, avec leurs dimensions et le nombre de
+rovers et de rochers, et chaque entrée est un lien vers sa page. Sans elle, revenir sur un
+secteur imposait de retrouver son UUID à la main.
+
+C'est la seule fonctionnalité du TP8 qui **traverse tout l'hexagone**, et à ce titre elle sert
+de rappel de l'architecture :
+
+| Couche | Ajout |
+|--------|-------|
+| `domain/model` | `BoardSummary` — une projection de lecture : id, dimensions, deux compteurs |
+| `domain/port` | `BoardPort.findRecent(limit)` |
+| `domain/usecase` | `ListBoardsUseCase` |
+| `application` | le bean correspondant |
+| `driven/postgres` | le SQL, avec les compteurs en sous-requêtes |
+| `driving/view` | `RecentBoardView`, qui met les libellés au pluriel |
+
+**Pourquoi une projection et non `List<Board>`.** Charger l'agrégat entier de chaque secteur
+pour n'afficher qu'un compteur ferait, pour douze secteurs, vingt-cinq requêtes et la
+reconstruction de douze `Board` complets. `BoardSummary` tient en une seule requête. La leçon
+vaut au-delà du kata : **un port n'est pas obligé de ne renvoyer que des agrégats** ; une
+projection de lecture est un concept du domaine à part entière.
+
+**Il a fallu une migration.** La table `boards` n'avait pas de colonne de date — on ne peut pas
+lister « les plus récents » sans un ordre. `004-add-boards-created-at.xml` ajoute `created_at`
+avec le même `clock_timestamp()` que `rovers`, plus un index descendant. Comme `save` est un
+upsert qui ne touche pas la colonne, **réenregistrer un secteur ne le fait pas remonter dans la
+liste** — ce qui est testé.
+
+**Le plafond de douze est une décision de présentation**, donc il vit dans le contrôleur, pas
+dans le domaine. Le use case se contente de refuser une limite inférieure à 1.
+
+### L'aperçu cliquable
+
+Saisir `1,2 3,3` à la main pour poser deux rochers demande de tenir un repère dans sa tête et
+de ne pas se tromper de sens. L'écran d'accueil affiche donc un **aperçu du secteur à l'échelle
+des dimensions saisies**, et chaque case y est un `<button>` qui pose ou retire un rocher.
+
+Comme pour le joystick, il y a **deux entrées pour un seul état** : l'aperçu et le champ texte
+écrivent tous deux `[data-testid="board-obstacles"]`, qui reste le champ réellement soumis. On
+peut cliquer, puis corriger au clavier, puis recliquer. Sans JavaScript, le champ texte suffit.
+
+Deux garde-fous, tous deux nés d'un vrai défaut :
+
+- **rétrécir le secteur oublie les rochers qui en sortent.** Sans cela, poser un rocher en (4,3)
+  puis ramener la largeur à 3 produit un `PositionOutOfBoardException` au moment de valider —
+  et comme les erreurs passent par un `redirect`, le formulaire revient vide : tout est perdu.
+  L'élagage se déclenche sur `change` (à la validation du champ), jamais sur `input` : sur
+  `input`, taper « 12 » passerait par l'état « 1 » et effacerait presque tout au passage ;
+- **au-delà de 400 cases, l'aperçu s'efface** au profit du champ texte. Le domaine accepte
+  n'importe quelle dimension positive ; un secteur 1000 × 1000 fabriquerait un million de
+  boutons et figerait l'onglet.
+
+### Le joystick
+
+La séquence de commandes se saisit de deux façons, et les deux écrivent le **même** champ :
+
+- au clavier, dans `[data-testid="command-sequence"]` ;
+- à la croix directionnelle, dont chaque touche concatène sa lettre dans ce champ.
+
+La correspondance n'est pas celle d'un pavé directionnel ordinaire, et c'est le point à
+expliquer en séance : **haut et bas translatent** (`F`, `B`), **gauche et droite font pivoter
+sur place** (`L`, `R`). Ce ne sont pas des déplacements latéraux — le domaine n'en a pas. C'est
+la commande de char. Deux choses rendent la chose lisible sans lire la documentation : les
+icônes de `L` et `R` sont des flèches **courbes** de rotation, pas des flèches droites, et une
+phrase sous le champ le dit en clair.
+
+La touche centrale de la croix efface le dernier ordre. Une commande qui ne sait qu'ajouter est
+inutilisable dès le premier faux clic — et le retour arrière comble le trou au milieu du pad.
+
+`joystick.js` ne fait que trois choses : concaténer, retrancher, et filtrer la saisie en
+majuscules sur `[FBLR]` en préservant la position du curseur. Aucun framework, aucun état
+applicatif dans la page. **Sans JavaScript, le champ texte et le bouton Exécuter fonctionnent
+toujours** : le joystick est un confort, jamais un passage obligé.
+
+### Le contrat de sélection
+
+Les tests end-to-end sont le seul niveau où le test dépend du **rendu**. Ce couplage est
+inévitable, mais il peut être placé où l'on veut. Ici il est explicite et versionné : chaque
+élément que les tests doivent atteindre porte un attribut `data-*` prévu pour ça.
+
+| Attribut | Porté par | Valeur |
+|----------|-----------|--------|
+| `data-testid` | tous les éléments interactifs | `board-width`, `board-height`, `board-obstacles`, `create-board`, `rover-id`, `rover-x`, `rover-y`, `rover-direction`, `deploy-rover`, `command-rover`, `command-sequence`, `send-commands`, `joystick-erase`, `board-preview`, `recent-boards`, `grid`, `board-id`, `error` |
+| `data-rover-option` | le bouton radio d'une carte d'unité | l'identifiant du rover pilotable |
+| `data-command` | chaque touche du joystick | `F`, `B`, `L` ou `R` |
+| `data-preview-cell` | chaque case de l'aperçu d'accueil | `"x,y"`, comme `data-cell` |
+| `data-recent-board` | chaque entrée de la liste des secteurs | l'identifiant du secteur |
+| `data-cell` | chaque `<td>` de la grille | `"x,y"` en coordonnées **du domaine** |
+| `data-rover` | la case occupée par un rover | l'identifiant du rover |
+| `data-direction` | la case occupée par un rover | `N`, `E`, `S` ou `W` |
+| `data-obstacle` | la case portant un obstacle | `"true"`, **attribut absent** sinon |
+| `data-unit` | la case et la carte d'une unité | son index de palette, qui donne sa couleur |
+
+Deux détails font la robustesse de ce contrat :
+
+- `data-rover` et `data-cell` sont portés par le **même** élément. Un test peut donc interroger
+  la grille dans les deux sens sans sélecteur supplémentaire : « qu'y a-t-il en (2,3) ? »
+  (`[data-cell="2,3"]`) et « où est Curiosity ? » (`[data-rover="curiosity"]`) ;
+- les attributs facultatifs sont **absents** plutôt que vides. `th:attr` omet l'attribut quand
+  l'expression vaut `null`, ce qui rend `should('not.have.attr', 'data-rover')` une assertion
+  exacte : une case libre n'a pas d'attribut `data-rover`, elle n'en a pas un vide.
+
 ## Persistance
 
 `BoardPort` est implémenté par un unique adapter, `BoardDAO`, qui lit et écrit **l'agrégat
@@ -99,7 +250,7 @@ Le schéma est géré par Liquibase (`db/changelog.xml` + un changelog par table
 
 | Table | Colonnes | Contraintes |
 |-------|----------|-------------|
-| `boards` | `id`, `width`, `height` | PK `id` |
+| `boards` | `id`, `width`, `height`, `created_at` | PK `id`, index descendant sur `created_at` |
 | `rovers` | `board_id`, `rover_id`, `x`, `y`, `direction`, `created_at` | **PK composite `(board_id, rover_id)`**, FK vers `boards` |
 | `obstacles` | `id`, `board_id`, `x`, `y` | **unicité `(board_id, x, y)`**, FK vers `boards` |
 
@@ -121,6 +272,7 @@ dans une seule transaction) sert à relire les rovers dans leur ordre de déploi
 
 - **Kotlin** 2.3.20 + **Spring Boot** 4.0.6 (Spring MVC, Jackson 3)
 - **Java** 25
+- **Thymeleaf** pour l'interface web (rendu côté serveur, aucun JavaScript)
 - **PostgreSQL** + **Liquibase** pour le schéma, `NamedParameterJdbcTemplate` pour le SQL
 - **Kotest** 6 (tests unitaires, tests property-based, tests d'intégration via
   `kotest-extensions-spring`)
@@ -131,6 +283,7 @@ dans une seule transaction) sert à relire les rovers dans leur ordre de déploi
 - **JaCoCo** pour la couverture de code
 - **PITest** (mutateurs `STRONGER`) pour les tests de mutation du domaine
 - **k6** pour les tests de performance, **Docker Compose** pour l'environnement qu'ils mesurent
+- **Cypress** 16 en **TypeScript** pour les tests end-to-end, contre ce même environnement
 
 ## Lancer l'application
 
@@ -460,6 +613,201 @@ le dérive du nom du dossier) et l'appelle par son nom de service, `http://rover
 En local, k6 installé directement est plus agréable — sortie en couleurs, pas de conteneur à
 relancer — et supprime une couche de virtualisation entre l'injecteur et l'application.
 
+## Tests end-to-end
+
+Un test end-to-end pilote l'application **par son interface**, exactement comme un utilisateur :
+il tape dans des champs, clique sur des boutons et lit ce qui s'affiche. Il ne connaît ni les
+routes REST, ni le schéma de la base, ni le modèle du domaine.
+
+C'est le seul niveau où la règle métier centrale du kata se **voit** : un rover arrêté par un
+autre rover n'est pas une exception qu'on attrape dans un test, c'est une flèche qui ne bouge pas
+à l'écran. Les tests de composants du TP4 vérifiaient déjà la même règle via l'API ; ce qu'ils ne
+pouvaient pas vérifier, c'est que la grille la montre.
+
+Comme les tests de performance, les tests end-to-end s'exécutent contre l'application
+**réellement déployée** par `docker-compose.yml` — pas contre un `bootRun`, pas contre un
+`@SpringBootTest`. Un `bootRun` lancé depuis l'IDE n'est pas ce qui part en production.
+
+```bash
+# 1. Lever l'environnement (image construite, base migrée, API joignable)
+docker compose up --detach --build --wait
+
+# 2. Lancer Cypress
+npm --prefix e2e ci
+npm --prefix e2e run cypress:run
+
+# 3. Démonter
+docker compose down --volumes
+```
+
+`npm ci` télécharge normalement le binaire Cypress via son script `postinstall`. Si npm est
+configuré avec `ignore-scripts=true` — c'est le cas de beaucoup de postes d'entreprise — le
+paquet s'installe sans son binaire et Cypress échoue avec *« No version of Cypress is installed »*.
+Le rattrapage est explicite et idempotent :
+
+```bash
+npm --prefix e2e exec cypress install
+```
+
+Pour écrire ou déboguer un scénario, le mode interactif ouvre un navigateur piloté qui rejoue le
+test à chaque sauvegarde du fichier, avec la *time-travel* sur chaque commande :
+
+```bash
+npm --prefix e2e run cypress:open
+```
+
+### Le dossier `e2e/`
+
+| Fichier | Rôle |
+|---------|------|
+| `package.json` | Cypress 16, TypeScript 5.9, les trois scripts npm |
+| `tsconfig.json` | `strict`, `noEmit`, `types: ["cypress"]` — la compilation est faite par Cypress, `tsc` ne sert qu'au typage |
+| `cypress.config.ts` | `baseUrl`, `video: false`, `defaultCommandTimeout` |
+| `cypress/e2e/apercu.cy.ts` | l'aperçu cliquable de l'écran d'accueil |
+| `cypress/e2e/deploiement.cy.ts` | création du plateau, débarquement, refus des collisions |
+| `cypress/e2e/historique.cy.ts` | la liste des secteurs précédents |
+| `cypress/e2e/pilotage.cy.ts` | séquences de commandes et les trois façons d'être bloqué |
+| `cypress/e2e/joystick.cy.ts` | la croix directionnelle, la saisie manuelle et leur cohabitation |
+| `cypress/support/commands.ts` | les commandes personnalisées (`cy.createBoard`, `cy.roverAt`, …) |
+| `cypress/support/index.d.ts` | leur typage, déclaré dans le namespace `Cypress` |
+
+`baseUrl` vaut `http://localhost:8080` dans la configuration, et se surcharge par la variable
+d'environnement `CYPRESS_BASE_URL` sans toucher au fichier : c'est ainsi que la CI pointe
+Cypress vers `http://rover:8080`, le nom de service du réseau Compose.
+
+### Les dix-sept scénarios
+
+| Fichier | Scénario | Ce qu'il démontre |
+|---------|----------|-------------------|
+| `apercu` | pose des rochers au clic et les reporte sur le secteur créé | le clic écrit bien le champ soumis, et le serveur place les rochers là où on les a posés |
+| `apercu` | retire un rocher au second clic | la case est une bascule, pas un ajout |
+| `apercu` | reflète la saisie manuelle dans l'aperçu | la synchronisation va dans les deux sens |
+| `apercu` | oublie les rochers qui sortent du secteur rétréci | le garde-fou qui évite de perdre tout le formulaire sur une erreur de bornes |
+| `deploiement` | affiche un rover déployé à sa position et dans son orientation | le tour complet formulaire → domaine → base → grille ; l'origine `(0,0)` est bien en bas à gauche |
+| `deploiement` | affiche les obstacles du plateau | les obstacles saisis à la création survivent à la persistance et sont visibles |
+| `deploiement` | refuse deux rovers sur la même case | l'invariant `409` de l'agrégat remonte jusqu'à un message d'erreur lisible, et le second rover n'apparaît pas |
+| `pilotage` | déplace le rover selon la séquence de commandes | `FFRF` : avancer et pivoter se composent, la case de départ se libère |
+| `pilotage` | **bloque un rover derrière un autre, puis le laisse repartir** | **le scénario qui justifie le domaine** : un rover est un obstacle mobile. Le blocage n'est pas une erreur — il n'y a aucun message, juste une flèche immobile. Puis le premier rover avance et le second peut enfin passer |
+| `pilotage` | bloque un rover devant un obstacle, qui tourne et repart | un mouvement bloqué n'interrompt pas la séquence : `RF` repart dans une autre direction |
+| `pilotage` | bloque un rover contre le bord du plateau, qui tourne et repart | même comportement pour la troisième cause de blocage, le mur |
+| `historique` | liste le secteur créé et permet d'y revenir | le tour complet création → liste → retour sur la page du secteur |
+| `historique` | résume les dimensions, les rovers et les rochers | les compteurs de la projection sont justes |
+| `historique` | remonte le secteur le plus récent en tête de liste | l'ordre repose sur `created_at`, pas sur l'UUID |
+| `joystick` | compose une séquence au joystick et déplace le rover | les touches remplissent bien le champ, et ce champ est bien celui que le formulaire envoie |
+| `joystick` | accepte la saisie manuelle et le joystick dans le même champ | les deux entrées écrivent le même état, aucune n'est maître ; le retour arrière retranche le dernier ordre |
+| `joystick` | refuse les caractères qui ne sont pas des commandes | `f x r 9` devient `FR` : le filtre côté page évite un aller-retour serveur pour un `InvalidCommandException` |
+
+Les scénarios d'aperçu et de joystick ne testent pas le domaine : ils testent **la page**. C'est la
+seule chose que les niveaux précédents ne pouvaient pas atteindre, et c'est exactement pour cela
+qu'ils sont ici plutôt que dans les tests de composants.
+
+Les trois causes de blocage — mur, obstacle, autre rover — sont couvertes séparément. Elles
+partagent la même implémentation (`Board.isFree`), mais ce sont trois règles différentes du
+cahier des charges : les tester ensemble ferait disparaître deux d'entre elles le jour où
+l'implémentation se scinde.
+
+### Des sélecteurs qui survivent au CSS
+
+Un test end-to-end est celui qui casse le plus facilement pour de mauvaises raisons. Le choix des
+sélecteurs est le principal levier.
+
+Ce qui est utilisé : `[data-testid="..."]` pour les éléments interactifs, `[data-cell="x,y"]`,
+`[data-rover]`, `[data-direction]` et `[data-obstacle]` pour la grille (voir *Le contrat de
+sélection* plus haut). Ces attributs n'existent que pour les tests : les toucher est un acte
+délibéré, jamais un effet de bord.
+
+Ce qui a été écarté :
+
+| Écarté | Pourquoi |
+|--------|----------|
+| classes CSS (`.cell`, `.rover`) | elles décrivent l'apparence. Renommer une classe en refaisant le style casse la suite, et rien ne signale au développeur qu'il a touché à un contrat de test |
+| position dans le DOM (`tr:nth-child(2) td:nth-child(3)`) | c'est le pire de tous : la position d'une case dépend de l'ordre de rendu des lignes. Ajouter un en-tête de colonne à la grille décale tout, et le test n'échoue même pas — il vérifie la mauvaise case |
+| texte affiché (`cy.contains('↑')`) | le glyphe est de la présentation. Remplacer les flèches par des icônes, ou traduire l'interface, casserait chaque assertion |
+| `id` HTML | uniques par page, donc inutilisables pour les cases d'une grille, et souvent déjà pris par d'autres usages |
+| `cy.request` vers l'API REST pour assertion | ce serait retester le TP4. L'assertion d'un test end-to-end doit porter sur ce que l'utilisateur **voit** |
+
+Une nuance sur `data-testid` : il est souvent critiqué comme « du code de test dans le code de
+production ». C'est exact, et c'est le but. L'alternative n'est pas *aucun* couplage, c'est un
+couplage **implicite** à la mise en page — bien plus coûteux, parce qu'il n'est écrit nulle part.
+
+**La refonte de l'interface a servi de preuve.** L'écran a été entièrement redessiné — palette,
+typographies, structure des panneaux, tuiles en relief, ajout du joystick — et les dix
+scénarios sont passés sans qu'une seule assertion soit modifiée. Un seul changement a été
+nécessaire, dans `cy.sendCommands` : le `<select>` du rover piloté est devenu un jeu de boutons
+radio, donc `.select(roverId)` est devenu `.check()` sur `[data-rover-option]`. **Une ligne, dans
+la commande personnalisée, pour un changement de contrôle HTML.** C'est tout l'intérêt de
+regrouper les sélecteurs à un seul endroit : le jour où la page change, on répare la commande,
+pas les spécifications.
+
+### Isolation des tests
+
+Chaque test commence par `cy.createBoard(...)`, qui crée un plateau neuf via le formulaire. Un
+plateau est identifié par un UUID et il est l'**agrégat** du domaine : deux plateaux ne partagent
+rien, ni rovers, ni obstacles. Deux tests ne peuvent donc pas se transmettre d'état, quel que
+soit leur ordre d'exécution — et la suite reste parallélisable.
+
+C'est ce qui permet de se passer du `TRUNCATE` des tests de composants (TP4). Là-bas, les
+scénarios partageaient un contexte Spring et une base, et il fallait nettoyer entre chacun ; ici
+la donnée s'accumule sans jamais se croiser. Une base qui grossit au fil des exécutions n'est pas
+un problème d'isolation : c'est le même compromis que le tirage de plateaux neufs dans les tests
+de performance.
+
+La liste des secteurs récents est le seul écran **global** : elle montre les douze derniers
+secteurs, y compris ceux créés par les autres tests. Les scénarios d'historique n'assertent donc
+jamais sur le contenu entier de la liste, toujours sur `[data-recent-board="<leur propre id>"]` —
+une assertion qui reste vraie quoi que les voisins aient créé.
+
+Cypress ajoute son propre filet : `testIsolation` (actif par défaut) vide cookies et stockage
+local entre deux tests. Le cookie de session qui porte les *flash attributes* ne survit donc pas
+d'un test à l'autre — un message d'erreur ne peut pas fuir dans le test suivant.
+
+### Cypress local ou dockerisé
+
+Les deux fonctionnent, les spécifications sont identiques.
+
+```bash
+# Cypress installé localement — le plus pratique pour itérer
+npm --prefix e2e run cypress:run
+
+# Cypress via son image Docker — aucune installation, ni Node ni navigateur
+docker run --rm --network rover \
+  --volume "$PWD/e2e:/e2e" \
+  --workdir /e2e \
+  --env CYPRESS_BASE_URL=http://rover:8080 \
+  cypress/included:16.0.0 --browser chrome
+```
+
+C'est la variante Docker qui tourne en CI, pour les mêmes raisons que k6 au TP7 : elle **épingle
+la version de Cypress, de Node et du navigateur** (l'image 16.0.0 embarque Node 24 et Chrome 153),
+et elle n'impose au runner aucune installation de navigateur. Un `cypress-io/github-action` sur un
+runner nu devrait télécharger Chrome, puis le binaire Cypress — deux caches de plus à gérer, et
+deux versions qui bougent sous les pieds de la suite.
+
+L'image `cypress/included` a son point d'entrée sur `cypress run` : les arguments passés au
+`docker run` sont ceux de la commande. Elle ignore le `node_modules` éventuellement monté depuis
+l'hôte — elle utilise son propre Cypress global — ce qui évite de lui servir un binaire compilé
+pour macOS.
+
+En local, Cypress installé directement reste plus agréable : sortie en couleurs, mode interactif,
+pas de volume à monter.
+
+> **Chrome plutôt qu'Electron.** Cypress 16 déprécie l'Electron embarqué comme navigateur de test
+> et affiche un avertissement à chaque exécution. Les scripts npm et la commande CI passent donc
+> `--browser chrome` : c'est le navigateur que l'image Docker embarque, et celui qu'ont déjà les
+> postes de développement.
+
+> **Le binaire Cypress ne vient pas du registre npm.** `npm install` récupère le paquet ; le
+> binaire, lui, est téléchargé séparément par un script `postinstall` et mis en cache dans
+> `~/Library/Caches/Cypress` (ou `~/.cache/Cypress`). Un registre d'entreprise qui autorise le
+> paquet ne garantit donc rien sur le binaire, et inversement `ignore-scripts=true` casse
+> l'installation sans casser `npm ci`.
+
+> **Cypress 16.1.0 a été refusé par la curation Artifactory** (`MIN-AGE-02-SUPPLYCHAIN` :
+> « package version is 1 days old »). La suite est épinglée sur **16.0.0**, publiée deux semaines
+> plus tôt. C'est une contrainte d'environnement, pas un choix technique — mais elle illustre un
+> vrai point : la dernière version d'une dépendance n'est pas toujours installable, et un projet
+> qui ne sait pas dire *quelle* version il utilise ne sait pas non plus reproduire ses exécutions.
+
 ## CI/CD
 
 Le pipeline GitHub Actions s'exécute sur chaque push/PR vers `main` ou `master` :
@@ -498,3 +846,31 @@ Les tests de performance vivent dans un **workflow séparé**, `performance.yml`
 La mesure qui fait foi est celle d'un environnement dédié et stable. En CI partagée, le
 workflow manuel garde sa valeur : il vérifie que l'environnement se monte, que le parcours
 tient sous charge, et il donne un ordre de grandeur — pas une mesure de référence.
+
+Les tests end-to-end vivent eux aussi dans un **workflow séparé**, `e2e.yml`, déclenché
+**manuellement** (`workflow_dispatch`) :
+
+1. construction de l'image et démarrage de l'environnement (`docker compose up --wait`)
+2. exécution de Cypress depuis `cypress/included:16.0.0`, sur le réseau Compose
+3. en cas d'échec : captures d'écran publiées en artefact, logs de l'application affichés
+4. `docker compose down --volumes`, toujours
+
+**Pourquoi un workflow séparé et non des étapes dans `ci.yml` ?** Parce que la nature de la
+dépendance n'est pas la même. `ci.yml` n'a besoin que d'un JDK et de Docker pour Testcontainers ;
+le job end-to-end construit une image applicative, démarre deux conteneurs et en lance un
+troisième qui embarque un navigateur. Les mélanger allongerait le retour sur chaque push d'une
+préoccupation qui n'a rien à voir avec la compilation, et rendrait la lecture d'un échec plus
+difficile : « le build est rouge » ne dirait plus si c'est le code ou l'assemblage déployé.
+
+**Pourquoi manuel, alors que ces tests sont déterministes ?** C'est un choix assumé, et il
+mérite d'être discuté en séance parce qu'il va contre la règle générale. Contrairement aux tests
+de performance, rien ici ne dépend des caprices d'un runner partagé : les assertions portent sur
+des attributs du DOM, pas sur des millisecondes. Ces tests **pourraient** bloquer une pull request,
+et sur un vrai produit ils le devraient. Le prix à payer serait de plusieurs minutes sur chaque
+push — construction de l'image applicative comprise. Sur ce dépôt, qui est un support de cours et
+non un produit livré, on garde la CI courte et on lance la campagne end-to-end à la demande.
+
+La question à retenir n'est donc pas « manuel ou automatique », mais **ce qui justifie l'un ou
+l'autre** : un test de performance est écarté de la CI parce qu'il y serait *faux* ; un test
+end-to-end n'en est écarté que parce qu'il y est *lent*. Le premier argument est définitif, le
+second est un arbitrage qu'on révise le jour où le pipeline le permet.

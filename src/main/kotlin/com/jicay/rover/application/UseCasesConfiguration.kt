@@ -5,6 +5,7 @@ import com.jicay.rover.domain.usecase.CreateBoardUseCase
 import com.jicay.rover.domain.usecase.DeployRoverUseCase
 import com.jicay.rover.domain.usecase.ExecuteCommandsUseCase
 import com.jicay.rover.domain.usecase.GetBoardUseCase
+import com.jicay.rover.domain.usecase.ListBoardsUseCase
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
@@ -22,4 +23,7 @@ class UseCasesConfiguration {
 
     @Bean
     fun getBoardUseCase(boardPort: BoardPort) = GetBoardUseCase(boardPort)
+
+    @Bean
+    fun listBoardsUseCase(boardPort: BoardPort) = ListBoardsUseCase(boardPort)
 }

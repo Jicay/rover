@@ -1,6 +1,7 @@
 package com.jicay.rover.infrastructure.driven.postgres
 
 import com.jicay.rover.domain.model.Board
+import com.jicay.rover.domain.model.BoardSummary
 import com.jicay.rover.domain.model.Direction
 import com.jicay.rover.domain.model.Position
 import com.jicay.rover.domain.model.Rover
@@ -83,5 +84,28 @@ class BoardDAO(private val jdbcTemplate: NamedParameterJdbcTemplate) : BoardPort
 
         val (width, height) = dimensions
         return Board(id = id, width = width, height = height, obstacles = obstacles, rovers = rovers)
+    }
+
+    @Transactional(readOnly = true)
+    override fun findRecent(limit: Int): List<BoardSummary> = jdbcTemplate.query(
+        """
+        SELECT b.id,
+               b.width,
+               b.height,
+               (SELECT count(*) FROM rovers r WHERE r.board_id = b.id) AS rover_count,
+               (SELECT count(*) FROM obstacles o WHERE o.board_id = b.id) AS obstacle_count
+        FROM boards b
+        ORDER BY b.created_at DESC, b.id
+        LIMIT :limit
+        """.trimIndent(),
+        mapOf("limit" to limit),
+    ) { rs, _ ->
+        BoardSummary(
+            id = rs.getString("id"),
+            width = rs.getInt("width"),
+            height = rs.getInt("height"),
+            roverCount = rs.getInt("rover_count"),
+            obstacleCount = rs.getInt("obstacle_count"),
+        )
     }
 }

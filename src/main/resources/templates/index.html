@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="fr" xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rover</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet"
+        href="https://fonts.googleapis.com/css2?family=Bruno+Ace+SC&family=Rajdhani:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" th:href="@{/rover.css}">
+  <script th:src="@{/preview.js}" defer></script>
+</head>
+<body>
+<div class="shell">
+
+  <div class="banner">
+    <h1>Rover</h1>
+  </div>
+
+  <div data-testid="error" th:if="${error}" th:text="${error}"></div>
+
+  <div class="landing">
+
+    <div class="landing__pitch">
+      <p class="landing__lead">Posez un secteur, débarquez vos rovers.</p>
+      <p class="landing__body">
+        Un mouvement est bloqué par une limite du secteur, un rocher ou un autre rover.
+        Le rover reste alors sur place, et la séquence se poursuit.
+      </p>
+      <div class="legend">
+        <span class="legend__item"><span class="legend__key">F</span>avancer</span>
+        <span class="legend__item"><span class="legend__key">B</span>reculer</span>
+        <span class="legend__item"><span class="legend__key">L</span>pivoter à gauche</span>
+        <span class="legend__item"><span class="legend__key">R</span>pivoter à droite</span>
+      </div>
+
+      <section class="panel recent" th:if="${!boards.isEmpty()}">
+        <div class="panel__body">
+          <h2 class="panel__title">Secteurs précédents</h2>
+          <ul class="recent__list" data-testid="recent-boards">
+            <li th:each="recent : ${boards}">
+              <a class="recent__link" th:href="@{/ui/boards/{id}(id=${recent.id})}"
+                 th:attr="data-recent-board=${recent.id}">
+                <span class="recent__size" th:text="${recent.size}"></span>
+                <span class="recent__counts" th:text="|${recent.rovers} · ${recent.obstacles}|"></span>
+                <span class="recent__id" th:text="${recent.id}"></span>
+              </a>
+            </li>
+          </ul>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel landing__form">
+      <form method="post" th:action="@{/ui/boards}" class="panel__body" data-testid="create-board-form">
+        <h2 class="panel__title">Nouveau secteur</h2>
+
+        <div class="field-row">
+          <label class="field">
+            <span class="field__label">Largeur</span>
+            <input type="number" name="width" value="5" min="1" required data-testid="board-width">
+          </label>
+          <label class="field">
+            <span class="field__label">Hauteur</span>
+            <input type="number" name="height" value="4" min="1" required data-testid="board-height">
+          </label>
+        </div>
+
+        <div class="field">
+          <span class="field__label">Rochers</span>
+          <div class="preview" data-testid="board-preview" data-preview-state="empty"></div>
+          <span class="field__hint" data-testid="preview-hint" hidden>
+            cliquez une case pour poser ou retirer un rocher
+          </span>
+          <span class="field__hint" data-testid="preview-too-large" hidden>
+            aperçu masqué au-delà de 400 cases
+          </span>
+        </div>
+
+        <label class="field">
+          <span class="field__label">Rochers saisis</span>
+          <input type="text" name="obstacles" value="" placeholder="1,2 3,3" autocomplete="off"
+                 data-testid="board-obstacles">
+          <span class="field__hint">une paire x,y par rocher, séparées par un espace</span>
+        </label>
+
+        <button type="submit" class="button" data-testid="create-board">Établir le secteur</button>
+      </form>
+    </section>
+
+  </div>
+</div>
+</body>
+</html>

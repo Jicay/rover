@@ -8,5 +8,6 @@
     <include file="db/changelogs/001-create-boards.xml"/>
     <include file="db/changelogs/002-create-rovers.xml"/>
     <include file="db/changelogs/003-create-obstacles.xml"/>
+    <include file="db/changelogs/004-add-boards-created-at.xml"/>
 
 </databaseChangeLog>

@@ -1,0 +1,14 @@
+{
+  "name": "rover-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "cypress:run": "cypress run --browser chrome",
+    "cypress:open": "cypress open",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "cypress": "16.0.0",
+    "typescript": "5.9.3"
+  }
+}

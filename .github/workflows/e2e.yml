@@ -1,0 +1,37 @@
+name: End-to-end
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cypress:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start environment
+        run: docker compose up --detach --build --wait
+
+      - name: Run Cypress
+        run: |
+          docker run --rm --network rover \
+            --volume "${{ github.workspace }}/e2e:/e2e" \
+            --workdir /e2e \
+            --env CYPRESS_BASE_URL=http://rover:8080 \
+            cypress/included:16.0.0 --browser chrome
+
+      - name: Upload Cypress screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cypress-screenshots
+          path: e2e/cypress/screenshots
+
+      - name: Application logs
+        if: failure()
+        run: docker compose logs rover
+
+      - name: Stop environment
+        if: always()
+        run: docker compose down --volumes
